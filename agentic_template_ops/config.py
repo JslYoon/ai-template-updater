@@ -132,6 +132,7 @@ class EnvConfig:
     quay_personal_ns: str
     quay_official_ns: str = "redhat-ai-dev"
     fork_owner: str = ""
+    rolling_demo_gitops_path: Path | None = None
 
     @classmethod
     def from_env_file(cls, env_file: str) -> "EnvConfig":
@@ -157,12 +158,15 @@ class EnvConfig:
                 f" in {env_file} or environment"
             )
 
+        rolling_demo = get("ROLLING_DEMO_GITOPS_PATH")
+
         return cls(
             developer_images_path=Path(dev_path),
             ai_lab_template_path=Path(tpl_path),
             quay_personal_ns=get("QUAY_PERSONAL_NS"),
             quay_official_ns=get("QUAY_OFFICIAL_NS", "redhat-ai-dev"),
             fork_owner=get("FORK_OWNER"),
+            rolling_demo_gitops_path=Path(rolling_demo) if rolling_demo else None,
         )
 
 

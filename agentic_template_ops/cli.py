@@ -404,6 +404,7 @@ def configure(env_file):
 
     dev_path = str(env.developer_images_path.resolve())
     tpl_path = str(env.ai_lab_template_path.resolve())
+    rolling_demo_path = str(env.rolling_demo_gitops_path.resolve()) if env.rolling_demo_gitops_path else None
 
     existing = {}
     if settings_path.exists():
@@ -418,15 +419,25 @@ def configure(env_file):
         if rule not in allow_rules:
             allow_rules.append(rule)
 
+    additional_dirs = [dev_path, tpl_path]
+
+    if rolling_demo_path:
+        read_rolling = f"Read({rolling_demo_path}/**)"
+        if read_rolling not in allow_rules:
+            allow_rules.append(read_rolling)
+        additional_dirs.append(rolling_demo_path)
+
     permissions["allow"] = allow_rules
-    permissions["additionalDirectories"] = [dev_path, tpl_path]
+    permissions["additionalDirectories"] = additional_dirs
     existing["permissions"] = permissions
 
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")
     click.echo(f"Wrote {settings_path}")
     click.echo(f"  Read access: {dev_path}")
     click.echo(f"  Read access: {tpl_path}")
-    click.echo(f"  Additional dirs: both added")
+    if rolling_demo_path:
+        click.echo(f"  Read access: {rolling_demo_path}")
+    click.echo(f"  Additional dirs: {len(additional_dirs)} added")
 
 
 @cli.command()

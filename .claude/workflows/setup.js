@@ -7,6 +7,7 @@ export const meta = {
     { title: 'Investigate', detail: 'Check all servers/models for version drift' },
     { title: 'Build', detail: 'Build container images in parallel, push to personal quay' },
     { title: 'Stage', detail: 'Update ai-lab-template env files with staging tags' },
+    { title: 'Deploy', detail: 'Deploy rolling demo to ROSA cluster for testing' },
   ],
 }
 
@@ -18,6 +19,7 @@ const ENV_SCHEMA = {
     quay_personal_ns: { type: 'string' },
     quay_official_ns: { type: 'string' },
     fork_owner: { type: 'string' },
+    rolling_demo_gitops_path: { type: 'string' },
   },
   required: ['developer_images_path', 'ai_lab_template_path', 'quay_personal_ns', 'quay_official_ns', 'fork_owner'],
 }
@@ -71,12 +73,24 @@ const STAGE_RESULT_SCHEMA = {
   required: ['success'],
 }
 
+const DEPLOY_RESULT_SCHEMA = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    rhdh_base_url: { type: 'string' },
+    error: { type: 'string' },
+  },
+  required: ['success'],
+}
+
+const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n'
+
 // ── Phase 1: Pre-flight ──────────────────────────────────────────────
 
 phase('Pre-flight')
 
 const env = await agent(
-  `Run these commands and return the parsed values:
+  TERSE + `Run these commands and return the parsed values:
 1. Run: agentic-template-ops configure
 2. Read the .env file in the project root (never modify it)
 3. Extract and return these values:
@@ -85,6 +99,7 @@ const env = await agent(
    - QUAY_PERSONAL_NS
    - QUAY_OFFICIAL_NS
    - FORK_OWNER
+   - ROLLING_DEMO_GITOPS_PATH (optional — return empty string if not set)
 
 4. Verify agentic-template-ops is installed: agentic-template-ops --help
 
@@ -100,7 +115,7 @@ if (!env) {
 log(`Config loaded. Personal quay: ${env.quay_personal_ns}, dev-images: ${env.developer_images_path}`)
 
 const quayAuth = await agent(
-  `Check if podman is authenticated to quay.io for the namespace "${env.quay_personal_ns}".
+  TERSE + `Check if podman is authenticated to quay.io for the namespace "${env.quay_personal_ns}".
 Run: podman login --get-login quay.io
 If it returns a username, auth is good — return authenticated: true.
 If it fails or says "not logged in", return authenticated: false.`,
@@ -126,7 +141,7 @@ log('Quay auth verified.')
 phase('Investigate')
 
 const audit = await agent(
-  `Run version drift investigation:
+  TERSE + `Run version drift investigation:
 1. Run: agentic-template-ops investigate
    This checks all model servers and models for updates and writes results to Google Sheets.
 2. After it completes, read the approved rows from the audit log:
@@ -190,7 +205,7 @@ const buildResults = await parallel(
   allBuildItems.map(item => () => {
     const isServer = item.component === 'server'
     const prompt = isServer
-      ? `Phase 3 setup. Read .env file at .env for config.
+      ? TERSE + `Phase 3 setup. Read .env file at .env for config.
 Build ONE server image and push to personal quay (quay.io/${env.quay_personal_ns}):
   server_type: ${item.server_type}
   current: ${item.current_version}
@@ -198,7 +213,7 @@ Build ONE server image and push to personal quay (quay.io/${env.quay_personal_ns
 Developer-images repo: ${env.developer_images_path}
 Copy latest version dir, update version pins, podman build, push to personal quay.
 Return success/failure, server_type, component "server", version, and image_tag.`
-      : `Phase 3 setup. Read .env file at .env for config.
+      : TERSE + `Phase 3 setup. Read .env file at .env for config.
 Build ONE model image and push to personal quay (quay.io/${env.quay_personal_ns}):
   model: ${item.server_type}
   current: ${item.current_version}
@@ -250,7 +265,7 @@ const modelSummary = JSON.stringify(
 )
 
 const stageResult = await agent(
-  `Phase 3 setup. Read .env file at .env for config.
+  TERSE + `Phase 3 setup. Read .env file at .env for config.
 Pre-verification workflow:
 1. cd ${env.ai_lab_template_path}
 2. Create ONE branch from main for ALL updates (servers + models together). Never create separate branches.
@@ -280,6 +295,40 @@ if (!stageResult || !stageResult.success) {
 log(`Templates staged on branch: ${stageResult.branch_name}`)
 log(`Registration URL: ${stageResult.registration_url}`)
 
+// ── Phase 5: Deploy rolling demo ────────────────────────────────────
+
+let deployResult = null
+
+if (!env.rolling_demo_gitops_path) {
+  log('ROLLING_DEMO_GITOPS_PATH not set — skipping rolling demo deploy.')
+} else {
+  phase('Deploy')
+
+  deployResult = await agent(
+    TERSE + `Deploy rolling demo to ROSA cluster. Read .env at .env for config.
+Rolling demo repo: ${env.rolling_demo_gitops_path}
+Fork owner: ${env.fork_owner}
+Template branch: ${stageResult.branch_name}
+
+1. Generate private-env from .env (overwrite always)
+2. Update values.yaml catalog location to fork branch
+3. Commit to development branch, push
+4. Run make install
+
+Return success and rhdh_base_url.`,
+    {
+      label: 'deploy-rolling-demo',
+      agentType: 'impl-rolling-demo',
+      schema: DEPLOY_RESULT_SCHEMA,
+    }
+  )
+
+  if (!deployResult || !deployResult.success) {
+    log('Rolling demo deploy failed. Check agent output for details.')
+  } else {
+    log(`Rolling demo deployed: ${deployResult.rhdh_base_url}`)
+  }
+}
 
 return {
   status: 'staged',
@@ -288,5 +337,8 @@ return {
   build_failures: failedBuilds.map(f => f.server_type),
   registration_url: stageResult.registration_url,
   branch: stageResult.branch_name,
-  next_step: 'Verify templates on ROSA cluster, then run /promote',
+  rhdh_url: env.rolling_demo_gitops_path ? deployResult?.rhdh_base_url : null,
+  next_step: env.rolling_demo_gitops_path
+    ? 'Test templates on RHDH, then run /promote'
+    : 'Verify templates on ROSA cluster, then run /promote',
 }

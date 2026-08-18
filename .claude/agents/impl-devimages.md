@@ -4,7 +4,7 @@ description: >
   After images are verified on cluster, commit new version directories
   to developer-images fork and create PR. Runs post-verification only.
 tools: [Bash, Read, Edit, Write]
-model: sonnet
+model: claude-sonnet-5[1m]
 ---
 
 ## Skills

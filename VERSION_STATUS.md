@@ -2,13 +2,13 @@
 
 > Current deployed versions across RHDH AI templates.
 > Updated after each successful apply-updates cycle.
-> Last checked: 2026-08-13 05:45 UTC
+> Last checked: 2026-08-18 11:14 UTC
 
 ## Model Servers
 
 | Server | Image | Current | Upstream | Latest (quay) | Update? | Source |
 |--------|-------|---------|----------|---------------|---------|--------|
-| llamacpp | `quay.io/redhat-ai-dev/llamacpp` | 0.3.16 | 0.3.34 | 0.3.16 | YES | https://pypi.org/project/llama-cpp-python/0.3.34/ |
+| llamacpp | `quay.io/redhat-ai-dev/llamacpp` | 0.3.16 | 0.3.35 | 0.3.16 | YES | https://pypi.org/project/llama-cpp-python/0.3.35/ |
 | object_detection | `quay.io/redhat-ai-dev/object_detection` | latest (unknown) | — | — | current | https://quay.io/repository/redhat-ai-dev/object_detection_python?tab=tags |
 | vllm | `quay.io/redhat-ai-dev/vllm` | 0.11.0 | v0.27.1 | v0.11.0 | YES | https://github.com/vllm-project/vllm/releases/tag/v0.27.1 |
 | whispercpp | `quay.io/redhat-ai-dev/whispercpp` | 1.5.4 | v1.9.2 | 1.8.0 | YES | https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.2 |

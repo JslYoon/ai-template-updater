@@ -5,7 +5,7 @@ description: >
   updates values.yaml catalog location to point at staged template branch,
   commits to development branch, and runs make install.
 tools: [Bash, Read, Edit, Write]
-model: sonnet
+model: claude-sonnet-5[1m]
 ---
 
 ## Skills
@@ -67,11 +67,24 @@ Only change the `target` value. Leave `type` and `rules` unchanged.
 This is a long-running operation. It installs operators, configures RHDH,
 sets up ArgoCD, creates secrets, and deploys the full rolling demo.
 
-After completion, compute and return the RHDH base URL:
+After completion, compute the RHDH base URL:
 `https://<ARGOCD_APP_NAME>-backstage-<RHDH_NAMESPACE>.<RHDH_CLUSTER_ROUTER_BASE>`
 
 Read `ARGOCD_APP_NAME`, `RHDH_NAMESPACE`, and `RHDH_CLUSTER_ROUTER_BASE` from
 the `scripts/private-env` file you just wrote.
+
+### Step 5: Verify deployment
+
+Do not report success until all checks pass:
+
+1. `oc get pods -n <RHDH_NAMESPACE>` — all pods must be Running with all containers ready
+2. `oc get application -n openshift-gitops <ARGOCD_APP_NAME>` — health status must be Healthy
+3. `curl -skL -o /dev/null -w '%{http_code}' <RHDH_BASE_URL>` — must return 200
+
+If pods are in Init or ContainerCreating, poll every 15 seconds (up to 10 minutes).
+If any check fails after timeout, return `success: false` with the failing check output.
+
+Only after all three checks pass, return the RHDH base URL as success.
 
 ## Environment
 

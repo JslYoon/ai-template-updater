@@ -18,13 +18,9 @@ class HfModelAgent(BaseModelAgent):
     def __init__(
         self,
         session: requests.Session | None = None,
-        hf_token: str | None = None,
     ):
         self.session = session or requests.Session()
         self.log = logging.getLogger("agent.model.hf")
-        self._hf_token = hf_token
-        if hf_token:
-            self.session.headers["Authorization"] = f"Bearer {hf_token}"
 
     def check_model(
         self, model_id: str, known_sha: str | None = None
@@ -163,9 +159,6 @@ class HfModelAgent(BaseModelAgent):
                 "--expand",
                 "sha,lastModified,pipeline_tag,siblings",
             ]
-            if self._hf_token:
-                cmd.extend(["--token", self._hf_token])
-
             result = subprocess.run(
                 cmd,
                 capture_output=True,

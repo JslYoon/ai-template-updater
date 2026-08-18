@@ -6,7 +6,8 @@ export const meta = {
     { title: 'Pre-flight', detail: 'Configure permissions, read .env' },
     { title: 'Investigate', detail: 'Check all servers/models for version drift' },
     { title: 'Build', detail: 'Build container images in parallel, push to personal quay' },
-    { title: 'Stage', detail: 'Update ai-lab-template env files with staging tags' },
+    { title: 'Record', detail: 'Record built image tags to the Sheet (source of truth)' },
+    { title: 'Stage', detail: 'Update ai-lab-template env files with staging tags from the Sheet' },
     { title: 'Deploy', detail: 'Deploy rolling demo to ROSA cluster for testing' },
   ],
 }
@@ -83,6 +84,30 @@ const DEPLOY_RESULT_SCHEMA = {
   required: ['success'],
 }
 
+// list-built output: the newest run's built rows (source of truth for staging)
+const BUILT_LIST_SCHEMA = {
+  type: 'object',
+  properties: {
+    built: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          template: { type: 'string' },
+          component: { type: 'string' },
+          server_type: { type: 'string' },
+          current_version: { type: 'string' },
+          latest_version: { type: 'string' },
+          image_tag: { type: 'string' },
+          notes: { type: 'string' },
+        },
+        required: ['component', 'server_type', 'latest_version', 'image_tag'],
+      },
+    },
+  },
+  required: ['built'],
+}
+
 const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n'
 
 // ── Phase 1: Pre-flight ──────────────────────────────────────────────
@@ -104,7 +129,7 @@ const env = await agent(
 4. Verify agentic-template-ops is installed: agentic-template-ops --help
 
 Return the extracted values as structured output.`,
-  { label: 'pre-flight', schema: ENV_SCHEMA }
+  { label: 'pre-flight', model: 'claude-sonnet-4-6', schema: ENV_SCHEMA }
 )
 
 if (!env) {
@@ -121,6 +146,7 @@ If it returns a username, auth is good — return authenticated: true.
 If it fails or says "not logged in", return authenticated: false.`,
   {
     label: 'check-quay-auth',
+    model: 'claude-sonnet-4-6',
     schema: {
       type: 'object',
       properties: { authenticated: { type: 'boolean' } },
@@ -144,13 +170,17 @@ const audit = await agent(
   TERSE + `Run version drift investigation:
 1. Run: agentic-template-ops investigate
    This checks all model servers and models for updates and writes results to Google Sheets.
-2. After it completes, read the approved rows from the audit log:
-   Run: gws sheets +read --spreadsheet 11S2h__-nN4fr25DJcfDbwQWXztLG5lrywthYPoSDPyQ --range "ai audit log"
-3. Parse the sheet output. Find rows where Status = "AWAITING_EXECUTION".
-4. Return updates_found count and the row data.
+2. After it completes, read the Audit Log from the Version Status sheet:
+   Run: gws sheets +read --spreadsheet 11S2h__-nN4fr25DJcfDbwQWXztLG5lrywthYPoSDPyQ --range "Version Status"
+3. Parse the sheet output. Find the "Audit Log" section header, then the newest run block:
+   the first row starting with "▶ RUN " is the newest run; the rows below it (until the
+   next "▶ RUN " row or end) are that run's update items. There is no approval gate —
+   every item in the newest run is an update to process.
+   Item row columns: [template, component, server_type, current_version, latest_version, source_url, notes].
+4. Return updates_found count (number of item rows) and the item rows.
 
 If no updates found, return updates_found: 0 and empty rows array.`,
-  { label: 'investigate', schema: AUDIT_SCHEMA }
+  { label: 'investigate', model: 'claude-sonnet-4-6', schema: AUDIT_SCHEMA }
 )
 
 if (!audit || audit.updates_found === 0) {
@@ -244,23 +274,95 @@ if (failedBuilds.length > 0) {
   log(`${failedBuilds.length} builds failed: ${failedBuilds.map(f => f.server_type).join(', ')}`)
 }
 
-log(`${successfulBuilds.length}/${allBuildItems.length} builds succeeded. Staging templates...`)
+log(`${successfulBuilds.length}/${allBuildItems.length} builds succeeded. Recording to Sheet...`)
 
-// ── Phase 4: Stage templates ─────────────────────────────────────────
+// ── Record: write built image tags to the Sheet (single source of truth) ──
+
+phase('Record')
+
+const buildPayload = JSON.stringify(
+  successfulBuilds.map(b => ({
+    component: b.component,
+    server_type: b.server_type,
+    version: b.version,
+    image_tag: b.image_tag,
+    success: true,
+  }))
+)
+
+// The record round-trip (record-builds → list-built) is occasionally flaky:
+// a transient gws read can make list-built return [] even though the builds
+// succeeded, which would otherwise throw away all build progress. So: retry
+// the round-trip, and if the Sheet still comes back empty, fall back to the
+// exact in-memory build tags (verbatim builder output — never reconstructed).
+const recordPrompt =
+  TERSE + `Record build results to the Google Sheet, then read them back.
+Run these commands, in order:
+1. agentic-template-ops record-builds --results '${buildPayload}'
+   Note the "Recorded N built row(s)" number it prints.
+2. agentic-template-ops list-built
+If step 1 reports "Recorded 0" OR step 2 prints an empty array [], wait briefly
+and run BOTH commands again (up to 2 more times) — this call is transient.
+Return {"built": <array from the final list-built>, "recorded_count": <N from the
+final record-builds>}. Do not modify or reconstruct any values.`
+
+const RECORD_SCHEMA = {
+  type: 'object',
+  properties: {
+    built: BUILT_LIST_SCHEMA.properties.built,
+    recorded_count: { type: 'number' },
+  },
+  required: ['built'],
+}
+
+let recorded = await agent(recordPrompt, {
+  label: 'record-builds', phase: 'Record', model: 'claude-sonnet-4-6', schema: RECORD_SCHEMA,
+})
+
+// One workflow-level retry on top of the agent's own internal retries.
+if (!recorded || !recorded.built || recorded.built.length === 0) {
+  log('Record came back empty — retrying the Sheet round-trip once...')
+  recorded = await agent(recordPrompt, {
+    label: 'record-builds-retry', phase: 'Record', model: 'claude-sonnet-4-6', schema: RECORD_SCHEMA,
+  })
+}
+
+let builtRows = (recorded && recorded.built) || []
+let recordedToSheet = builtRows.length > 0
+
+if (!recordedToSheet) {
+  // Sheet round-trip failed, but the builds themselves succeeded and we hold
+  // their exact tags. Stage from those so the pipeline is not lost. Map the
+  // build-result shape (version) to the built-row shape (latest_version).
+  log('Sheet still empty after retry — falling back to in-memory build tags for staging.')
+  log('WARNING: the Sheet was NOT updated. Run `agentic-template-ops record-builds` before /promote.')
+  builtRows = successfulBuilds.map(b => ({
+    component: b.component,
+    server_type: b.server_type,
+    latest_version: b.version,
+    image_tag: b.image_tag,
+  }))
+}
+
+log(`${builtRows.length} built rows (${recordedToSheet ? 'from Sheet' : 'from in-memory fallback'}). Staging templates...`)
+
+// ── Stage templates (from the Sheet's built rows — exact image tags) ──
 
 phase('Stage')
 
 const serverSummary = JSON.stringify(
-  successfulBuilds.filter(b => b.component === 'server').map(b => ({
+  builtRows.filter(b => b.component === 'server').map(b => ({
     server_type: b.server_type,
-    version: b.version,
+    version: b.latest_version,
+    image_tag: b.image_tag,
   }))
 )
 
 const modelSummary = JSON.stringify(
-  successfulBuilds.filter(b => b.component === 'model').map(b => ({
+  builtRows.filter(b => b.component === 'model').map(b => ({
     model: b.server_type,
-    version: b.version,
+    version: b.latest_version,
+    image_tag: b.image_tag,
   }))
 )
 
@@ -269,7 +371,7 @@ const stageResult = await agent(
 Pre-verification workflow:
 1. cd ${env.ai_lab_template_path}
 2. Create ONE branch from main for ALL updates (servers + models together). Never create separate branches.
-3. Update scripts/envs/* to use personal quay tags (quay.io/${env.quay_personal_ns})
+3. Update scripts/envs/* to use the EXACT image_tag from each entry below — do NOT reconstruct or reformat tags (they already include the correct registry, repo, and version prefix).
 4. Server updates: ${serverSummary}
 5. Model updates: ${modelSummary}
 6. Apply ALL server and model changes to the SAME branch in a SINGLE commit.
@@ -277,7 +379,7 @@ Pre-verification workflow:
 8. Commit and push to fork (${env.fork_owner})
 9. Output the RHDH registration URL
 
-IMPORTANT: Everything goes in ONE branch, ONE commit. Do not split servers and models into separate branches.
+IMPORTANT: Everything goes in ONE branch, ONE commit. Use image_tag verbatim.
 
 Return success, branch_name, and registration_url.`,
   {
@@ -335,10 +437,13 @@ return {
   servers_built: successfulBuilds.filter(b => b.component === 'server').length,
   models_built: successfulBuilds.filter(b => b.component === 'model').length,
   build_failures: failedBuilds.map(f => f.server_type),
+  recorded_to_sheet: recordedToSheet,
   registration_url: stageResult.registration_url,
   branch: stageResult.branch_name,
   rhdh_url: env.rolling_demo_gitops_path ? deployResult?.rhdh_base_url : null,
-  next_step: env.rolling_demo_gitops_path
-    ? 'Test templates on RHDH, then run /promote'
-    : 'Verify templates on ROSA cluster, then run /promote',
+  next_step: recordedToSheet
+    ? (env.rolling_demo_gitops_path
+        ? 'Test templates on RHDH, then run /promote'
+        : 'Verify templates on ROSA cluster, then run /promote')
+    : 'ACTION REQUIRED: the Sheet was not recorded — run `agentic-template-ops record-builds` (then verify with `list-built`) BEFORE /promote, since promote reads built rows from the Sheet.',
 }

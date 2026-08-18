@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(podman *)",
+      "Bash(oc *)",
+      "Bash(skopeo *)",
+      "Bash(hf *)",
+      "Bash(make *)",
+      "Bash(agentic-template-ops *)",
+      "Bash(acli jira *)",
+      "Bash(gh api *)",
+      "WebSearch",
+      "Read(/home/lyoon/Desktop/RHDH/developer-images/**)",
+      "Read(/home/lyoon/Desktop/RHDH/ai-lab-template/**)",
+      "Read(/home/lyoon/Desktop/RHDH/rolling-demo/**)"
+    ],
+    "additionalDirectories": [
+      "/home/lyoon/Desktop/RHDH/developer-images",
+      "/home/lyoon/Desktop/RHDH/ai-lab-template",
+      "/home/lyoon/Desktop/RHDH/rolling-demo"
+    ]
+  }
+}

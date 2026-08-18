@@ -6,9 +6,17 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agentic_template_ops.config import AuditResult
+from agentic_template_ops.config import (
+    AUDIT_SECTION_TITLE,
+    BUILT_FALSE,
+    RUN_MARKER_PREFIX,
+    SHEET_HIDDEN_SERVERS,
+    AuditResult,
+)
 
 log = logging.getLogger("report")
+
+MAX_RUNS = 20  # cap run history to bound sheet size
 
 
 def generate_version_status(
@@ -105,7 +113,9 @@ def generate_version_status(
     output_path.write_text("\n".join(lines))
 
     if spreadsheet_id:
-        _write_status_sheet(spreadsheet_id, now, seen_servers, seen_models, model_templates)
+        _write_status_sheet(
+            spreadsheet_id, now, seen_servers, seen_models, model_templates, results
+        )
 
 
 def _write_status_sheet(
@@ -114,12 +124,15 @@ def _write_status_sheet(
     seen_servers: dict[str, list[AuditResult]],
     seen_models: dict[str, AuditResult],
     model_templates: dict[str, list[str]],
+    results: list[AuditResult],
 ) -> None:
     sheet_name = "Version Status"
 
     server_rows = []
     server_update_flags = []
     for server_type in sorted(seen_servers):
+        if server_type in SHEET_HIDDEN_SERVERS:
+            continue
         group = seen_servers[server_type]
         by_version: dict[str, list[AuditResult]] = {}
         for r in group:
@@ -158,19 +171,44 @@ def _write_status_sheet(
         model_rows.append([model_id, templates, pipeline, current, latest, status, cur_date, lat_date])
         model_update_flags.append(is_update)
 
+    # -- Audit Log: this run's block = 1 summary row + 1 item row per update found --
+    audit_items = [r for r in results if r.update_available]
+    new_run_block: list[list] = [[
+        f"{RUN_MARKER_PREFIX}{timestamp}",
+        f"{len(audit_items)} updates",
+        f"{len(results)} checks",
+    ]]
+    for r in audit_items:
+        # Columns must match config.AUDIT_ITEM_FIELDS. built/image_tag start
+        # empty; the build phase flips them via gws_client.record_build_results.
+        new_run_block.append([
+            r.template_name, r.component, r.server_type,
+            r.current_version, r.latest_version, r.source_url, r.notes,
+            BUILT_FALSE, "",
+        ])
+
+    prior_runs = _read_existing_runs(spreadsheet_id, sheet_name)
+    run_blocks = [new_run_block] + prior_runs
+    if len(run_blocks) > MAX_RUNS:
+        log.info(
+            "Audit Log capped at %d runs; dropping %d oldest",
+            MAX_RUNS, len(run_blocks) - MAX_RUNS,
+        )
+        run_blocks = run_blocks[:MAX_RUNS]
+
     # Row layout
     # 0: title
     # 1: empty
     # 2: "Model Servers" section header (merged)
     # 3: server column headers
-    # 4..4+N-1: server data rows
-    # 4+N: empty
-    # 4+N+1: "Models (HuggingFace)" section header (merged)
-    # 4+N+2: model column headers
-    # 4+N+3..: model data rows
-    # last+1: empty
-    # last+2: "Build Lag Summary" section header
-    # last+3..: build lag rows
+    # 4..: server data rows
+    # empty
+    # "Models (HuggingFace)" section header (merged)
+    # model column headers
+    # model data rows
+    # empty
+    # "Audit Log" section header (merged)
+    # run blocks: each = 1 summary row + N item rows (newest first)
 
     n_srv = len(server_rows)
     srv_header_row = 3
@@ -180,15 +218,8 @@ def _write_status_sheet(
     model_header_row = model_section_row + 1
     model_data_start = model_header_row + 1
     model_data_end = model_data_start + len(model_rows)
-    lag_section_row = model_data_end + 1
-
-    lag_rows = []
-    for server_type in sorted(seen_servers):
-        rep = seen_servers[server_type][0]
-        upstream = rep.upstream_version or _extract_upstream(rep.notes)
-        quay = rep.quay_version or ""
-        if upstream and upstream != "—" and quay and _version_gt(upstream, quay):
-            lag_rows.append([server_type, quay, upstream])
+    audit_section_row = model_data_end + 1
+    audit_data_start = audit_section_row + 1
 
     all_rows: list[list] = [
         [f"Version Status — Last updated: {timestamp}"],
@@ -202,14 +233,21 @@ def _write_status_sheet(
     all_rows.append(["Model", "Used By", "Pipeline", "Current", "Latest", "Update?", "Current Date", "Latest Date"])
     all_rows.extend(model_rows)
     all_rows.append([])
-    all_rows.append(["Build Lag Summary"])
-    if lag_rows:
-        all_rows.append(["Server", "Quay Version", "Upstream Version"])
-        all_rows.extend(lag_rows)
-    else:
-        all_rows.append(["No build lag detected."])
+    all_rows.append([AUDIT_SECTION_TITLE])
+    for block in run_blocks:
+        all_rows.extend(block)
 
-    lag_header_row = lag_section_row + 1
+    # Locate run-summary rows and per-run item ranges for formatting / grouping
+    run_summary_rows: list[int] = []
+    item_group_ranges: list[tuple[int, int]] = []
+    cursor = audit_data_start
+    for block in run_blocks:
+        run_summary_rows.append(cursor)
+        n_items = len(block) - 1
+        if n_items > 0:
+            item_group_ranges.append((cursor + 1, cursor + 1 + n_items))
+        cursor += len(block)
+    n_audit_rows = cursor - audit_data_start
 
     try:
         # Clear old data first
@@ -242,10 +280,10 @@ def _write_status_sheet(
 
         # Build formatting requests
         requests_list = _build_format_requests(
-            sheet_id, n_srv, len(model_rows), len(lag_rows),
+            sheet_id, n_srv, len(model_rows),
             srv_header_row, srv_data_start,
             model_section_row, model_header_row, model_data_start,
-            lag_section_row, lag_header_row,
+            audit_section_row, audit_data_start, n_audit_rows, run_summary_rows,
             server_update_flags, model_update_flags,
         )
 
@@ -256,9 +294,106 @@ def _write_status_sheet(
             "--format", "json",
         ])
 
+        # Collapsible row groups for each run's item rows (best-effort)
+        _apply_run_grouping(spreadsheet_id, sheet_id, item_group_ranges)
+
         log.info("Updated '%s' sheet tab with formatting", sheet_name)
     except Exception as e:
         log.warning("Failed to write Version Status sheet: %s", e)
+
+
+def _read_existing_runs(spreadsheet_id: str, sheet_name: str) -> list[list[list]]:
+    """Read prior Audit Log run blocks (newest-first) so history survives rewrite."""
+    try:
+        output = _gws_run([
+            "sheets", "spreadsheets", "values", "get",
+            "--params", json.dumps({
+                "spreadsheetId": spreadsheet_id,
+                "range": sheet_name,
+            }),
+            "--format", "json",
+        ])
+        values = json.loads(output).get("values", [])
+    except (RuntimeError, json.JSONDecodeError):
+        return []
+
+    start = None
+    for i, row in enumerate(values):
+        if row and row[0] == AUDIT_SECTION_TITLE:
+            start = i + 1
+            break
+    if start is None:
+        return []
+
+    blocks: list[list[list]] = []
+    current: list[list] | None = None
+    for row in values[start:]:
+        first = row[0] if row else ""
+        if first.startswith(RUN_MARKER_PREFIX):
+            if current is not None:
+                blocks.append(current)
+            current = [row]
+        elif current is not None and first:
+            current.append(row)
+    if current is not None:
+        blocks.append(current)
+    return blocks
+
+
+def _apply_run_grouping(
+    spreadsheet_id: str, sheet_id: int, ranges: list[tuple[int, int]]
+) -> None:
+    """Create collapsible row groups for each run's item rows.
+
+    Deletes any pre-existing row groups on the sheet first so groups don't
+    accumulate across runs.
+    """
+    if not ranges:
+        return
+
+    requests: list[dict] = []
+
+    # Delete existing row groups (metadata survives a values clear)
+    try:
+        output = _gws_run([
+            "sheets", "spreadsheets", "get",
+            "--params", json.dumps({
+                "spreadsheetId": spreadsheet_id,
+                "fields": "sheets(properties.sheetId,rowGroups.range)",
+            }),
+            "--format", "json",
+        ])
+        for s in json.loads(output).get("sheets", []):
+            if s.get("properties", {}).get("sheetId") != sheet_id:
+                continue
+            for grp in s.get("rowGroups", []):
+                rng = grp.get("range", {})
+                requests.append({"deleteDimensionGroup": {"range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": rng.get("startIndex"),
+                    "endIndex": rng.get("endIndex"),
+                }}})
+    except (RuntimeError, json.JSONDecodeError):
+        pass
+
+    for start, end in ranges:
+        requests.append({"addDimensionGroup": {"range": {
+            "sheetId": sheet_id,
+            "dimension": "ROWS",
+            "startIndex": start,
+            "endIndex": end,
+        }}})
+
+    try:
+        _gws_run([
+            "sheets", "spreadsheets", "batchUpdate",
+            "--params", json.dumps({"spreadsheetId": spreadsheet_id}),
+            "--json", json.dumps({"requests": requests}),
+            "--format", "json",
+        ])
+    except RuntimeError as e:
+        log.warning("Run grouping skipped: %s", e)
 
 
 def _get_sheet_id(spreadsheet_id: str, sheet_name: str) -> int | None:
@@ -320,10 +455,11 @@ def _merge(sheet_id: int, row: int, col_end: int) -> dict:
 
 def _build_format_requests(
     sheet_id: int,
-    n_srv: int, n_model: int, n_lag: int,
+    n_srv: int, n_model: int,
     srv_header_row: int, srv_data_start: int,
     model_section_row: int, model_header_row: int, model_data_start: int,
-    lag_section_row: int, lag_header_row: int,
+    audit_section_row: int, audit_data_start: int, n_audit_rows: int,
+    run_summary_rows: list[int],
     server_update_flags: list[bool],
     model_update_flags: list[bool] | None = None,
 ) -> list[dict]:
@@ -348,8 +484,8 @@ def _build_format_requests(
         "padding": {"top": 8, "bottom": 8},
     }, "textFormat,backgroundColor,verticalAlignment,padding"))
 
-    # -- Section headers: "Model Servers" (row 2), "Models" (model_section_row), "Build Lag" (lag_section_row) --
-    for sec_row in [2, model_section_row, lag_section_row]:
+    # -- Section headers: "Model Servers" (row 2), "Models", "Audit Log" --
+    for sec_row in [2, model_section_row, audit_section_row]:
         reqs.append(_merge(sheet_id, sec_row, max_col))
         reqs.append(_cell_format(sheet_id, sec_row, sec_row + 1, 0, max_col, {
             "textFormat": {"bold": True, "fontSize": 12, "foregroundColorStyle": {"rgbColor": white}},
@@ -358,11 +494,10 @@ def _build_format_requests(
             "padding": {"top": 4, "bottom": 4},
         }, "textFormat,backgroundColor,verticalAlignment,padding"))
 
-    # -- Column headers: server (row 3), model (model_header_row), lag (lag_header_row) --
+    # -- Column headers: server (row 3), model (model_header_row) --
     for hdr_row, cols in [
         (srv_header_row, max_col),
         (model_header_row, max_col),
-        (lag_header_row, 3),
     ]:
         reqs.append(_cell_format(sheet_id, hdr_row, hdr_row + 1, 0, cols, {
             "textFormat": {"bold": True, "fontSize": 10, "foregroundColorStyle": {"rgbColor": dark_text}},
@@ -382,6 +517,21 @@ def _build_format_requests(
                 "backgroundColor": bg,
             }, "textFormat,backgroundColor"))
 
+    # -- Audit Log rows: base 10pt white, then bold light-blue run-summary rows --
+    audit_cols = 9  # includes built + image_tag (config.AUDIT_ITEM_FIELDS)
+    if n_audit_rows > 0:
+        reqs.append(_cell_format(
+            sheet_id, audit_data_start, audit_data_start + n_audit_rows,
+            0, audit_cols, {
+                "textFormat": {"fontSize": 10},
+                "backgroundColor": white,
+            }, "textFormat,backgroundColor"))
+    for row in run_summary_rows:
+        reqs.append(_cell_format(sheet_id, row, row + 1, 0, max_col, {
+            "textFormat": {"bold": True, "fontSize": 10, "foregroundColorStyle": {"rgbColor": dark_text}},
+            "backgroundColor": light_blue,
+        }, "textFormat,backgroundColor"))
+
     # -- Update status coloring: green for "current", red for "YES" (column F = index 5) --
     for i, is_update in enumerate(server_update_flags):
         row = srv_data_start + i
@@ -400,8 +550,8 @@ def _build_format_requests(
                 "textFormat": {"bold": is_update, "fontSize": 10},
             }, "backgroundColor,textFormat"))
 
-    # -- Column widths --
-    col_widths = [130, 280, 100, 100, 100, 80, 110, 110]
+    # -- Column widths -- (9th = image_tag, used by the Audit Log section)
+    col_widths = [130, 280, 100, 100, 100, 80, 110, 110, 340]
     for i, w in enumerate(col_widths):
         reqs.append({
             "updateDimensionProperties": {
@@ -458,14 +608,6 @@ def _extract_upstream(notes: str) -> str:
     import re
     match = re.search(r"upstream (?:has )?(v?[\d.]+)", notes)
     return match.group(1) if match else "—"
-
-
-def _version_gt(a: str, b: str) -> bool:
-    from packaging.version import InvalidVersion, Version
-    try:
-        return Version(a.lstrip("v")) > Version(b.lstrip("v"))
-    except InvalidVersion:
-        return a != b
 
 
 def _extract_compat(notes: str) -> str:

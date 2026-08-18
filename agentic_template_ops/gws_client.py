@@ -6,22 +6,16 @@ import subprocess
 from typing import Any
 
 from agentic_template_ops.config import (
+    AUDIT_COL_BUILT,
+    AUDIT_COL_IMAGE_TAG,
+    AUDIT_SECTION_TITLE,
+    BUILT_TRUE,
+    RUN_MARKER_PREFIX,
     SERVER_NAME_MAP,
-    AuditResult,
     TemplateCandidate,
 )
 
 log = logging.getLogger("gws_client")
-
-
-def _sanitize(value: str) -> str:
-    if (
-        isinstance(value, str)
-        and value
-        and value[0] in ("=", "+", "-", "@", "\t", "\r")
-    ):
-        return "'" + value
-    return value
 
 
 def _parse_server_types(raw: str) -> list[str]:
@@ -32,6 +26,88 @@ def _parse_server_types(raw: str) -> list[str]:
         if canonical and canonical not in result:
             result.append(canonical)
     return result
+
+
+def _cell(row: list, idx: int) -> str:
+    """Safely read a trimmed cell; Sheets omits trailing empty cells."""
+    return str(row[idx]).strip() if idx < len(row) else ""
+
+
+def _newest_run_item_rows(values: list[list]) -> list[tuple[int, list]]:
+    """Return (1-indexed sheet row number, cells) for the newest run's item rows.
+
+    Locates the "Audit Log" section, then the first (newest) "▶ RUN " marker,
+    and collects the item rows beneath it until the next run marker or the end.
+    Returns [] if there is no audit section / no run yet.
+    """
+    start = None
+    for i, row in enumerate(values):
+        if row and row[0] == AUDIT_SECTION_TITLE:
+            start = i
+            break
+    if start is None:
+        return []
+
+    rows: list[tuple[int, list]] = []
+    in_run = False
+    for i in range(start + 1, len(values)):
+        row = values[i]
+        first = row[0] if row else ""
+        if first.startswith(RUN_MARKER_PREFIX):
+            if in_run:
+                break  # reached the next, older run — stop
+            in_run = True
+            continue
+        if not in_run or not first:
+            continue
+        rows.append((i + 1, row))  # sheet rows are 1-indexed
+    return rows
+
+
+def _row_to_update(row: list) -> dict[str, Any]:
+    return {
+        "template": _cell(row, 0),
+        "component": _cell(row, 1),
+        "server_type": _cell(row, 2),
+        "current_version": _cell(row, 3),
+        "latest_version": _cell(row, 4),
+        "source_url": _cell(row, 5),
+        "notes": _cell(row, 6),
+        "built": _cell(row, AUDIT_COL_BUILT).upper() == BUILT_TRUE,
+        "image_tag": _cell(row, AUDIT_COL_IMAGE_TAG),
+    }
+
+
+def _compute_build_updates(
+    values: list[list], results: list[dict]
+) -> list[tuple[int, str]]:
+    """Pure: figure out which newest-run rows to mark built + with which tag.
+
+    Matches each successful build result to every item row sharing
+    (component, server_type, latest_version) — one build marks all templates
+    that use it. Returns [(sheet_row_number, image_tag), ...].
+    """
+    # Index successful results by (component, server_type, version)
+    built: dict[tuple[str, str, str], str] = {}
+    for r in results:
+        if not r.get("success"):
+            continue
+        key = (
+            str(r.get("component", "")).strip(),
+            str(r.get("server_type", "")).strip(),
+            str(r.get("version", "")).strip(),
+        )
+        tag = str(r.get("image_tag", "")).strip()
+        if all(key) and tag:
+            built[key] = tag
+
+    updates: list[tuple[int, str]] = []
+    for row_num, row in _newest_run_item_rows(values):
+        key = (_cell(row, 1), _cell(row, 2), _cell(row, 4))
+        tag = built.get(key)
+        if tag:
+            updates.append((row_num, tag))
+    return updates
 
 
 class GwsCliClient:
@@ -134,157 +210,74 @@ class GwsCliClient:
             )
         return candidates
 
-    def write_audit_results(
-        self,
-        results: list[AuditResult],
-        sheet_name: str = "ai audit log",
-    ) -> None:
-        rows = []
-        for r in results:
-            rows.append([
-                False,
-                _sanitize(r.template_name),
-                _sanitize(r.component),
-                _sanitize(r.server_type),
-                _sanitize(r.current_version),
-                _sanitize(r.latest_version),
-                "AWAITING_EXECUTION" if r.update_available else "CURRENT",
-                _sanitize(r.notes),
-                _sanitize(r.source_url),
-                r.checked_at,
-            ])
-
-        if not rows:
-            return
-
-        # Clear existing data rows (keep header row 1)
-        try:
-            self._run_gws([
-                "sheets", "spreadsheets", "values", "clear",
-                "--params", json.dumps({
-                    "spreadsheetId": self.spreadsheet_id,
-                    "range": f"{sheet_name}!A2:J",
-                }),
-                "--format", "json",
-            ])
-        except RuntimeError:
-            pass
-
-        start_row = 2
-        end_row = start_row + len(rows) - 1
-        end_col = chr(ord("A") + len(rows[0]) - 1)
-        cell_range = f"{sheet_name}!A{start_row}:{end_col}{end_row}"
-
-        self._run_gws(
-            [
-                "sheets", "spreadsheets", "values", "update",
-                "--params", json.dumps({
-                    "spreadsheetId": self.spreadsheet_id,
-                    "range": cell_range,
-                    "valueInputOption": "USER_ENTERED",
-                }),
-                "--json", json.dumps({"values": rows}),
-                "--format", "json",
-            ]
-        )
-        log.info("Wrote %d rows to %s", len(rows), cell_range)
-
-        # Add checkboxes to column A
-        output = self._run_gws([
-            "sheets", "spreadsheets", "get",
-            "--params", json.dumps({
-                "spreadsheetId": self.spreadsheet_id,
-                "fields": "sheets.properties",
-            }),
-            "--format", "json",
-        ])
-        sheets_data = json.loads(output)
-        sheet_id = None
-        for s in sheets_data.get("sheets", []):
-            if s["properties"]["title"] == sheet_name:
-                sheet_id = s["properties"]["sheetId"]
-                break
-
-        if sheet_id is not None:
-            self._run_gws(
-                [
-                    "sheets", "spreadsheets", "batchUpdate",
-                    "--params", json.dumps({
-                        "spreadsheetId": self.spreadsheet_id,
-                    }),
-                    "--json", json.dumps({"requests": [{
-                        "setDataValidation": {
-                            "range": {
-                                "sheetId": sheet_id,
-                                "startRowIndex": start_row - 1,
-                                "endRowIndex": end_row,
-                                "startColumnIndex": 0,
-                                "endColumnIndex": 1,
-                            },
-                            "rule": {
-                                "condition": {"type": "BOOLEAN"},
-                                "showCustomUi": True,
-                            },
-                        }
-                    }]}),
-                    "--format", "json",
-                ]
-            )
-            log.info("Added checkboxes to A%d:A%d", start_row, end_row)
-
-    def read_approved_rows(
-        self, sheet_name: str = "ai audit log", all_updates: bool = False
-    ) -> list[dict[str, Any]]:
+    def _read_values(self, sheet_name: str) -> list[list]:
         try:
             output = self._run_gws([
-                "sheets", "+read",
-                "--spreadsheet", self.spreadsheet_id,
-                "--range", sheet_name,
+                "sheets", "spreadsheets", "values", "get",
+                "--params", json.dumps({
+                    "spreadsheetId": self.spreadsheet_id,
+                    "range": sheet_name,
+                }),
                 "--format", "json",
             ])
         except RuntimeError:
             return []
-
-        data = json.loads(output)
-        values = data.get("values", [])
-        if len(values) < 2:
+        try:
+            return json.loads(output).get("values", [])
+        except json.JSONDecodeError:
             return []
 
-        headers = values[0]
-        approved = []
-        for idx, row in enumerate(values[1:], start=2):
-            row_dict = {}
-            for i, h in enumerate(headers):
-                row_dict[h] = row[i] if i < len(row) else ""
+    def read_pending_updates(
+        self, sheet_name: str = "Version Status"
+    ) -> list[dict[str, Any]]:
+        """Return the newest Audit Log run's item rows (every detected update).
 
-            status = str(row_dict.get("Status", ""))
-            if status != "AWAITING_EXECUTION":
-                continue
+        The build phase reads this list to know what to build. Item columns are
+        config.AUDIT_ITEM_FIELDS; `built` and `image_tag` are included so callers
+        can see build state.
+        """
+        values = self._read_values(sheet_name)
+        return [_row_to_update(row) for _, row in _newest_run_item_rows(values)]
 
-            is_approved = str(row_dict.get("Approve Upgrade", "")).upper() == "TRUE"
-            if not all_updates and not is_approved:
-                continue
+    def read_built_updates(
+        self, sheet_name: str = "Version Status"
+    ) -> list[dict[str, Any]]:
+        """Return only the newest run's rows whose image has been built + pushed.
 
-            approved.append({
-                "row_index": idx,
-                "template": str(row_dict.get("Template", "")),
-                "component": str(row_dict.get("Component", "")),
-                "server_type": str(row_dict.get("Server Type", "")),
-                "current_version": str(row_dict.get("Current Version", "")),
-                "latest_version": str(row_dict.get("Latest Version", "")),
-                "notes": str(row_dict.get("Notes", "")),
-                "source_url": str(row_dict.get("Source URL", "")),
-            })
-        return approved
+        This is the source of truth for staging and promotion after the build
+        phase: each returned row carries the exact `image_tag` to use.
+        """
+        return [u for u in self.read_pending_updates(sheet_name) if u["built"]]
 
-    def mark_row_processed(self, row_index: int, pr_url: str) -> None:
+    def record_build_results(
+        self, results: list[dict], sheet_name: str = "Version Status"
+    ) -> int:
+        """Mark newest-run rows as built and record the exact pushed image tag.
+
+        `results` items are {component, server_type, version, image_tag, success}.
+        A single successful build marks every item row that shares
+        (component, server_type, latest_version). Returns rows updated.
+        """
+        values = self._read_values(sheet_name)
+        updates = _compute_build_updates(values, results)
+        if not updates:
+            return 0
+
+        # Batch-update columns H:I (built, image_tag) for each matched row.
+        col_built = chr(ord("A") + AUDIT_COL_BUILT)       # "H"
+        col_tag = chr(ord("A") + AUDIT_COL_IMAGE_TAG)     # "I"
+        data = [
+            {
+                "range": f"{sheet_name}!{col_built}{row_num}:{col_tag}{row_num}",
+                "values": [[BUILT_TRUE, image_tag]],
+            }
+            for row_num, image_tag in updates
+        ]
         self._run_gws([
-            "sheets", "spreadsheets", "values", "update",
-            "--params", json.dumps({
-                "spreadsheetId": self.spreadsheet_id,
-                "range": f"ai audit log!G{row_index}",
-                "valueInputOption": "RAW",
-            }),
-            "--json", json.dumps({"values": [[f"PR_CREATED: {pr_url}"]]}),
+            "sheets", "spreadsheets", "values", "batchUpdate",
+            "--params", json.dumps({"spreadsheetId": self.spreadsheet_id}),
+            "--json", json.dumps({"valueInputOption": "RAW", "data": data}),
             "--format", "json",
         ])
+        log.info("Recorded %d built rows in %s", len(updates), sheet_name)
+        return len(updates)

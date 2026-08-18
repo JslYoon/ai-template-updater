@@ -1,13 +1,12 @@
 export const meta = {
   name: 'promote',
-  description: 'Phase 5: retag images to official quay, create PRs for developer-images and ai-lab-template, update audit log',
+  description: 'Phase 5: retag images to official quay, create PRs for developer-images and ai-lab-template',
   whenToUse: 'Run this AFTER verifying staged templates on ROSA cluster (after /setup). Promotes staging images to production.',
   phases: [
-    { title: 'Config', detail: 'Read .env and approved rows from audit log' },
+    { title: 'Config', detail: 'Read .env and the latest audit run from Version Status' },
     { title: 'Promote', detail: 'Retag images from personal to official quay in parallel' },
     { title: 'DevImages', detail: 'Commit version dirs to developer-images, create PRs (sequential)' },
     { title: 'Templates', detail: 'Update ai-lab-template to official tags, create upstream PR' },
-    { title: 'Audit', detail: 'Mark audit log rows as promoted' },
   ],
 }
 
@@ -24,16 +23,16 @@ const CONFIG_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          row_index: { type: 'number' },
           template: { type: 'string' },
           component: { type: 'string' },
           server_type: { type: 'string' },
           current_version: { type: 'string' },
           latest_version: { type: 'string' },
+          image_tag: { type: 'string' },
           notes: { type: 'string' },
           source_url: { type: 'string' },
         },
-        required: ['row_index', 'template', 'component', 'server_type', 'current_version', 'latest_version'],
+        required: ['component', 'server_type', 'latest_version', 'image_tag'],
       },
     },
   },
@@ -75,24 +74,27 @@ const TEMPLATE_RESULT_SCHEMA = {
   required: ['success'],
 }
 
+const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n'
+
 // ── Phase 1: Read Config ─────────────────────────────────────────────
 
 phase('Config')
 
 const config = await agent(
-  `Read configuration for Phase 5 promote:
+  TERSE + `Read configuration for Phase 5 promote:
 1. Read .env file in project root (never modify it). Extract:
    - DEVELOPER_IMAGES_PATH, AI_LAB_TEMPLATE_PATH
    - QUAY_PERSONAL_NS, QUAY_OFFICIAL_NS, FORK_OWNER
-2. Read approved rows from audit log:
-   Run: gws sheets +read --spreadsheet 11S2h__-nN4fr25DJcfDbwQWXztLG5lrywthYPoSDPyQ --range "ai audit log"
-3. Parse rows where Status = "AWAITING_EXECUTION". Return all fields including row_index.
-4. Return config values + rows array.`,
-  { label: 'read-config', schema: CONFIG_SCHEMA }
+2. Read the built updates (source of truth) from the Sheet:
+   Run: agentic-template-ops list-built
+   This prints a JSON array of the newest run's BUILT rows, each with an exact
+   image_tag (the personal-quay image to promote). Only built images are returned.
+3. Return config values + that array as "rows" (one per built item). Do not modify image_tag.`,
+  { label: 'read-config', model: 'claude-sonnet-4-6', schema: CONFIG_SCHEMA }
 )
 
 if (!config || !config.rows || config.rows.length === 0) {
-  log('No updates awaiting promotion.')
+  log('No built images to promote. Run /setup (Build+Record) first.')
   return { status: 'nothing_to_promote' }
 }
 
@@ -131,15 +133,21 @@ const promoteResults = await parallel(
   allPromoteItems.map(item => () => {
     const isServer = item.component === 'server'
     const prompt = isServer
-      ? `Phase 5 promote. Read .env file at .env for config.
-Retag ONE server image from personal quay (quay.io/${config.quay_personal_ns}) to official quay (quay.io/${config.quay_official_ns}) and push.
+      ? TERSE + `Phase 5 promote. Read .env file at .env for config.
+Retag ONE server image to official quay (quay.io/${config.quay_official_ns}) and push.
+  source_image: ${item.image_tag}
   server_type: ${item.server_type}
   version: ${item.latest_version}
+Use source_image EXACTLY as the retag source. The official tag keeps the same repo
+name and tag but swaps the namespace to ${config.quay_official_ns}.
 Return success, server_type, component "server", version, and official_tag.`
-      : `Phase 5 promote. Read .env file at .env for config.
-Retag ONE model image from personal quay (quay.io/${config.quay_personal_ns}) to official quay (quay.io/${config.quay_official_ns}) and push.
+      : TERSE + `Phase 5 promote. Read .env file at .env for config.
+Retag ONE model image to official quay (quay.io/${config.quay_official_ns}) and push.
+  source_image: ${item.image_tag}
   model: ${item.server_type}
   version: ${item.latest_version}
+Use source_image EXACTLY as the retag source. The official tag keeps the same repo
+name and tag but swaps the namespace to ${config.quay_official_ns}.
 Return success, server_type, component "model", version, and official_tag.`
 
     return agent(prompt, {
@@ -176,7 +184,7 @@ for (let i = 0; i < serverList.length; i++) {
   log(`DevImages ${i + 1}/${serverList.length}: ${server.server_type} ${server.latest_version}`)
 
   const result = await agent(
-    `Phase 5 promote. Read .env file at .env for config.
+    TERSE + `Phase 5 promote. Read .env file at .env for config.
 Commit version directory for ONE server in ${config.developer_images_path} and create PR to upstream redhat-ai-dev/developer-images.
 Fork owner: ${config.fork_owner}
   server_type: ${server.server_type}
@@ -210,6 +218,7 @@ const serverSummary = JSON.stringify(
     server_type: p.server_type,
     current: config.rows.find(r => r.server_type === p.server_type)?.current_version,
     latest: p.version,
+    image_tag: p.official_tag,
   }))
 )
 
@@ -218,21 +227,22 @@ const modelSummary = JSON.stringify(
     model: p.server_type,
     current: config.rows.find(r => r.server_type === p.server_type)?.current_version,
     latest: p.version,
+    image_tag: p.official_tag,
   }))
 )
 
 const templateResult = await agent(
-  `Phase 5 promote. Read .env file at .env for config.
+  TERSE + `Phase 5 promote. Read .env file at .env for config.
 Post-verification workflow:
 1. Use the EXISTING branch (from setup phase) — do NOT create a new branch. Check out the most recent update-all-* branch.
-2. Update scripts/envs/* to use official quay tags (quay.io/${config.quay_official_ns}) — ALL server and model changes in ONE commit.
+2. Update scripts/envs/* to use the EXACT image_tag from each entry below (the official quay tags) — do NOT reconstruct tags. ALL server and model changes in ONE commit.
 3. Server updates: ${serverSummary}
 4. Model updates: ${modelSummary}
 5. Re-run generation scripts
 6. Commit, push, create PR to upstream redhat-ai-dev/ai-lab-template
 Fork owner: ${config.fork_owner}
 
-IMPORTANT: Everything in ONE branch, ONE commit. Never split servers and models into separate branches.
+IMPORTANT: Everything in ONE branch, ONE commit. Use image_tag verbatim. Never split servers and models into separate branches.
 
 Return success and pr_url.`,
   {
@@ -245,28 +255,6 @@ Return success and pr_url.`,
 if (!templateResult || !templateResult.success) {
   log('Template PR creation failed.')
 }
-
-// ── Phase 5: Update Audit Log ────────────────────────────────────────
-
-phase('Audit')
-
-const rowIndices = config.rows.map(r => r.row_index)
-
-await agent(
-  `Update audit log in Google Sheets. For each row index below, set column G (Status) to "PROMOTED — PRs pending".
-
-Spreadsheet ID: 11S2h__-nN4fr25DJcfDbwQWXztLG5lrywthYPoSDPyQ
-Sheet: ai audit log
-Row indices: ${JSON.stringify(rowIndices)}
-
-For each row, run:
-gws sheets spreadsheets values update --params '{"spreadsheetId":"11S2h__-nN4fr25DJcfDbwQWXztLG5lrywthYPoSDPyQ","range":"ai audit log!G<ROW_INDEX>","valueInputOption":"RAW"}' --json '{"values":[["PROMOTED — PRs pending"]]}' --format json
-
-Replace <ROW_INDEX> with each row index.`,
-  { label: 'audit-log' }
-)
-
-log('Audit log updated.')
 
 // ── Summary ──────────────────────────────────────────────────────────
 

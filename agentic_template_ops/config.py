@@ -71,6 +71,37 @@ SERVER_CONFIGS: dict[str, ServerConfig] = {
     "detr-resnet-101": OBJECT_DETECTION_CONFIG,
 }
 
+# Server types to scan but hide from the Version Status sheet display
+# (redundant/noise on the sheet; still tracked internally).
+SHEET_HIDDEN_SERVERS: set[str] = {"llamacpp"}
+
+# Audit Log section markers on the "Version Status" sheet. The run history
+# lives under this section; setup/promote read the newest run's item rows as
+# their work-list. report.py writes these; gws_client.py parses them.
+AUDIT_SECTION_TITLE = "Audit Log"
+RUN_MARKER_PREFIX = "▶ RUN "
+
+# Audit Log item-row column order — the machine-readable contract shared by
+# report.py (writer) and gws_client.py (reader / build-status updater).
+# The last two columns track build state so the Sheet is the single source of
+# truth after the investigate phase: `built` flips TRUE once an image is pushed,
+# and `image_tag` holds the exact pushed tag that staging/promote must use.
+AUDIT_ITEM_FIELDS = [
+    "template",         # 0
+    "component",        # 1
+    "server_type",      # 2
+    "current_version",  # 3
+    "latest_version",   # 4
+    "source_url",       # 5
+    "notes",            # 6
+    "built",            # 7
+    "image_tag",        # 8
+]
+AUDIT_COL_BUILT = 7
+AUDIT_COL_IMAGE_TAG = 8
+BUILT_TRUE = "TRUE"
+BUILT_FALSE = "FALSE"
+
 # Mapping from sheet "Model Server (Link)" values to canonical server type
 SERVER_NAME_MAP: dict[str, str] = {
     "vllm": "vllm",
@@ -174,11 +205,8 @@ class EnvConfig:
 class AppConfig:
     spreadsheet_id: str = "11S2h__-nN4fr25DJcfDbwQWXztLG5lrywthYPoSDPyQ"
     input_sheet_name: str = "Template List"
-    audit_sheet_name: str = "ai audit log"
+    status_sheet_name: str = "Version Status"
     google_credentials_path: Path = Path("service_account.json")
-    hf_token: str = field(
-        default_factory=lambda: os.environ.get("HF_TOKEN", "")
-    )
     max_workers: int = 8
     dry_run: bool = False
     target_repos: list[str] = field(default_factory=lambda: [

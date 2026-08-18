@@ -4,7 +4,7 @@ description: >
   Update ai-lab-template env files with new quay image tags, regenerate
   templates, and manage the testing/PR lifecycle on a fork branch.
 tools: [Bash, Read, Edit, Write]
-model: sonnet
+model: claude-sonnet-5[1m]
 ---
 
 ## Skills

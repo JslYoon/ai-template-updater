@@ -108,16 +108,15 @@ def _investigate_impl(spreadsheet_id: str, creds: str, dry_run: bool) -> list:
     generate_version_status(
         results,
         status_path,
-        spreadsheet_id=config.spreadsheet_id,
+        spreadsheet_id=None if dry_run else config.spreadsheet_id,
     )
-    click.echo(f"Version status written to {status_path} + Google Sheet")
-
     if dry_run:
-        click.echo("[DRY RUN] Skipping Google Sheets write.")
+        click.echo(f"[DRY RUN] Version status written to {status_path}; skipped Google Sheet.")
     else:
-        click.echo("Writing audit results to Google Sheets...")
-        reader.write_audit_results(results, config.audit_sheet_name)
-        click.echo("Phase 1 complete. Audit log written to Google Sheets.")
+        click.echo(
+            f"Phase 1 complete. Version status + audit log written to "
+            f"{status_path} + Google Sheet."
+        )
 
     return results
 
@@ -130,10 +129,10 @@ def _setup_impl(
 
     click.echo("Reading updates from Google Sheets...")
     reader = GwsCliClient(config.spreadsheet_id)
-    approved = reader.read_approved_rows(config.audit_sheet_name, all_updates=all_updates)
+    approved = reader.read_pending_updates(config.status_sheet_name)
 
     if not approved:
-        click.echo("No updates awaiting execution.")
+        click.echo("No updates in the latest audit run.")
         return []
 
     click.echo(f"Found {len(approved)} updates.\n")
@@ -239,15 +238,15 @@ def _promote_impl(
     config = AppConfig(spreadsheet_id=spreadsheet_id, dry_run=dry_run)
     env = EnvConfig.from_env_file(env_file)
 
-    click.echo("Reading updates from Google Sheets...")
+    click.echo("Reading built updates from Google Sheets...")
     reader = GwsCliClient(config.spreadsheet_id)
-    approved = reader.read_approved_rows(config.audit_sheet_name, all_updates=all_updates)
+    approved = reader.read_built_updates(config.status_sheet_name)
 
     if not approved:
-        click.echo("No updates awaiting execution.")
+        click.echo("No built images in the latest audit run. Run setup first.")
         return
 
-    click.echo(f"Found {len(approved)} updates.\n")
+    click.echo(f"Found {len(approved)} built updates.\n")
     click.echo(f"Official quay:    quay.io/{env.quay_official_ns}")
     click.echo(f"Developer-images: {env.developer_images_path}")
     click.echo(f"AI Lab Template:  {env.ai_lab_template_path}")
@@ -342,15 +341,6 @@ def _promote_impl(
         dry_run=dry_run,
     )
 
-    if not dry_run:
-        click.echo("\nUpdating audit log...")
-        for task in approved:
-            reader.mark_row_processed(
-                task["row_index"],
-                "PROMOTED — PRs pending",
-            )
-        click.echo("Audit log updated.")
-
     click.echo("\nPhase 5 complete." if not dry_run else "\n[DRY RUN] Agent prompts shown above.")
 
 
@@ -375,7 +365,7 @@ def investigate(creds, spreadsheet_id, dry_run):
 @cli.command()
 @click.option("--spreadsheet-id", default=DEFAULT_SPREADSHEET_ID, help="Google Sheet spreadsheet ID")
 @click.option("--env-file", default=".env", help="Path to .env config file")
-@click.option("--all", "all_updates", is_flag=True, help="Take all updates, skip Phase 2 review")
+@click.option("--all", "all_updates", is_flag=True, help="Deprecated no-op; all detected updates are always taken (no approval gate)")
 @click.option("--dry-run", is_flag=True, help="Show what would happen")
 def setup(spreadsheet_id, env_file, all_updates, dry_run):
     """Phase 3: Build images, push to personal quay, set up templates on cluster."""
@@ -385,11 +375,48 @@ def setup(spreadsheet_id, env_file, all_updates, dry_run):
 @cli.command()
 @click.option("--spreadsheet-id", default=DEFAULT_SPREADSHEET_ID, help="Google Sheet spreadsheet ID")
 @click.option("--env-file", default=".env", help="Path to .env config file")
-@click.option("--all", "all_updates", is_flag=True, help="Take all updates, skip Phase 2 review")
+@click.option("--all", "all_updates", is_flag=True, help="Deprecated no-op; all detected updates are always taken (no approval gate)")
 @click.option("--dry-run", is_flag=True, help="Show what would happen")
 def promote(spreadsheet_id, env_file, all_updates, dry_run):
     """Phase 5: Promote images to official quay, create PRs, update sheets."""
     _promote_impl(spreadsheet_id, env_file, all_updates, dry_run)
+
+
+@cli.command(name="record-builds")
+@click.option("--spreadsheet-id", default=DEFAULT_SPREADSHEET_ID, help="Google Sheet spreadsheet ID")
+@click.option("--results", "results_json", default="", help="JSON array of build results; reads stdin if omitted")
+def record_builds(spreadsheet_id, results_json):
+    """Record build outcomes to the Sheet's Audit Log (newest run).
+
+    Input is a JSON array of {component, server_type, version, image_tag, success}.
+    Successful builds flip `built`=TRUE and store the exact `image_tag` on every
+    matching row, making the Sheet the source of truth for staging/promotion.
+    """
+    raw = results_json.strip() or sys.stdin.read().strip()
+    if not raw:
+        click.echo("No build results provided (use --results or stdin).")
+        sys.exit(1)
+    try:
+        results = json.loads(raw)
+    except json.JSONDecodeError as e:
+        click.echo(f"Invalid JSON: {e}")
+        sys.exit(1)
+    if not isinstance(results, list):
+        click.echo("Build results must be a JSON array.")
+        sys.exit(1)
+
+    reader = GwsCliClient(spreadsheet_id)
+    n = reader.record_build_results(results)
+    click.echo(f"Recorded {n} built row(s) in the Audit Log.")
+
+
+@cli.command(name="list-built")
+@click.option("--spreadsheet-id", default=DEFAULT_SPREADSHEET_ID, help="Google Sheet spreadsheet ID")
+def list_built(spreadsheet_id):
+    """Print the newest run's built updates as JSON (source of truth for stage/promote)."""
+    reader = GwsCliClient(spreadsheet_id)
+    built = reader.read_built_updates()
+    click.echo(json.dumps(built))
 
 
 @cli.command()

@@ -4,7 +4,7 @@ description: >
   Build container images from developer-images source and push to quay.io.
   Handles personal quay (staging) and official quay (promotion).
 tools: [Bash, Read, Edit, Write]
-model: sonnet
+model: claude-sonnet-5[1m]
 ---
 
 ## Skills

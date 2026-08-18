@@ -38,9 +38,7 @@ class DriftScanner:
     def __init__(self, app_config: AppConfig):
         self.config = app_config
         self.session = self._build_session()
-        self.model_agent = HfModelAgent(
-            session=self.session, hf_token=app_config.hf_token
-        )
+        self.model_agent = HfModelAgent(session=self.session)
         self.log = logging.getLogger("drift_scanner")
 
     def _build_session(self) -> requests.Session:

@@ -67,27 +67,58 @@ flowchart TD
 
 ## Prerequisites
 
-> **Full stack reference:** [docs/required-stack.md](docs/required-stack.md) — every CLI,
-> library, plugin, skill, auth, and repo, grouped by layer and by which phase needs it.
-
 ### CLI tools
 
-| Tool | Install | Purpose |
-|------|---------|---------|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | Agent orchestration, workflow runner |
-| [podman](https://podman.io/) | `sudo dnf install podman` (Fedora) / [install guide](https://podman.io/docs/installation) | Container image builds and pushes |
-| [skopeo](https://github.com/containers/skopeo) | `sudo dnf install skopeo` (Fedora) / [install guide](https://github.com/containers/skopeo/blob/main/install.md) | Image inspection and tag listing |
-| [hf](https://huggingface.co/docs/huggingface_hub/guides/cli) | Installed with `huggingface-hub>=0.34` (a Python dep) | HuggingFace model info during `investigate` (optional — HTTP fallback) |
-| [gh](https://cli.github.com/) | `sudo dnf install gh` (Fedora) / [install guide](https://github.com/cli/cli#installation) | GitHub PR creation |
-| Python 3.11+ | `sudo dnf install python3.11` (Fedora) / [python.org](https://www.python.org/downloads/) | CLI tool runtime |
+Core (`investigate` needs only these + `gws` from the plugin section):
+
+| Tool | Install | Used for |
+|------|---------|----------|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | Runs the workflows + subagents |
+| Python 3.11+ | `sudo dnf install python3.11` (Fedora) / [python.org](https://www.python.org/downloads/) | `agentic-template-ops` runtime |
+| [gh](https://cli.github.com/) | `sudo dnf install gh` (Fedora) / [install guide](https://github.com/cli/cli#installation) | GitHub API (version checks) + PRs — used by both the Python and the agents |
+| [hf](https://huggingface.co/docs/huggingface_hub/guides/cli) (optional) | Installed with `huggingface-hub>=0.34` (a Python dep) | HuggingFace model info during `investigate` (falls back to HTTP if absent) |
+
+Build / stage / deploy (added by the `setup`, `stage-demo`, `promote` subagents):
+
+| Tool | Install | Used for |
+|------|---------|----------|
+| [podman](https://podman.io/) | `sudo dnf install podman` (Fedora) / [install guide](https://podman.io/docs/installation) | Build / push / retag container images |
+| [git](https://git-scm.com/) | `sudo dnf install git` / [downloads](https://git-scm.com/downloads) | Branches, commits, pushes |
+| [oc](https://docs.openshift.com/container-platform/latest/cli_reference/openshift_cli/getting-started-cli.html) | [OpenShift CLI](https://docs.openshift.com/container-platform/latest/cli_reference/openshift_cli/getting-started-cli.html) | ROSA / OpenShift access for the rolling demo |
+| [make](https://www.gnu.org/software/make/) | `sudo dnf install make` | Rolling-demo `make install` |
+
+> The rolling-demo `make install` also expects these on the host it runs on:
+> [`kubectl`](https://kubernetes.io/docs/tasks/tools/), [`yq`](https://github.com/mikefarah/yq#install),
+> [`argocd`](https://argo-cd.readthedocs.io/en/stable/cli_installation/),
+> [`cosign`](https://docs.sigstore.dev/cosign/system_config/installation/), `openssl`, and
+> `envsubst` (GNU [gettext](https://www.gnu.org/software/gettext/)) — plus it provisions the
+> GitOps, Pipelines, and NFD OpenShift operators (RHOAI optional).
+
+`skopeo` is **not** required — retagging uses `podman`; the code never calls skopeo. (It's
+handy for manual tag inspection but nothing in the repo depends on it.)
+
+### Python libraries
+
+Declared in `pyproject.toml`, installed by `pip install -e .`:
+
+| Library | Purpose |
+|---------|---------|
+| [click](https://pypi.org/project/click/) | CLI framework |
+| [requests](https://pypi.org/project/requests/) | HTTP version checks (quay / PyPI / HuggingFace) |
+| [tabulate](https://pypi.org/project/tabulate/) | `investigate` results table |
+| [packaging](https://pypi.org/project/packaging/) | semver comparison |
+| [huggingface-hub](https://pypi.org/project/huggingface-hub/) (>=0.34) | provides the `hf` CLI (not imported as a library) |
+
+`pydantic` is declared but currently unused (safe to remove).
 
 ### Authentication
 
 | Service | How to authenticate | Used for |
 |---------|-------------------|----------|
-| **quay.io** | `podman login quay.io` — [docs](https://docs.quay.io/guides/login.html) | Push/pull container images |
-| **GitHub** | `gh auth login` — [docs](https://cli.github.com/manual/gh_auth_login) | Create PRs, push to forks |
-| **Google Sheets** | Installed via `gws` plugin below. Run `gws auth` to authenticate — [setup guide](https://github.com/WadeWarren/gws-claude-plugin) | Read template list, write the Version Status sheet / Audit Log |
+| **quay.io** | `podman login quay.io` — [docs](https://docs.quay.io/guides/login.html) | Push/pull/retag container images |
+| **GitHub** | `gh auth login` — [docs](https://cli.github.com/manual/gh_auth_login) | GitHub API (version checks) + PRs + fork pushes |
+| **Google Sheets** | Installed via `gws` plugin below. Run `gws auth` — [setup guide](https://github.com/WadeWarren/gws-claude-plugin) | Read Template List, write the Version Status sheet / Audit Log |
+| **ROSA cluster** (optional) | `oc login …` — [docs](https://docs.openshift.com/container-platform/latest/cli_reference/openshift_cli/getting-started-cli.html) | Rolling-demo deploy |
 
 ### Claude Code plugins
 

@@ -198,18 +198,26 @@ source_url, notes, built, image_tag
 ## 10. Vertex model configuration (IMPORTANT)
 
 Runs against Google Vertex (`CLAUDE_CODE_USE_VERTEX=1`, project
-`itpc-ca-40fc187f02`, region `global`). Model availability on the **workflow
-subagent path** is narrower than the main loop:
+`itpc-ca-40fc187f02`, region `global`). The **main loop** and the **workflow
+subagent path** have different model availability, so they use different models:
 
-- **impl-* agents use `model: claude-sonnet-4-6`** (exact id in each
-  `.claude/agents/impl-*.md` frontmatter). This is the reliable subagent model here.
-- `claude-sonnet-5[1m]` was previously pinned but was dropped from this vertex
-  deployment (2026-08-19: "model claude-sonnet-5[1m] is not available on your
-  vertex deployment"). Do not use it. Base `claude-sonnet-5` is also flaky here.
-- `model: sonnet` (alias) resolves to **base** `claude-sonnet-5` — do not use the
-  alias; write the exact id.
-- `claude-opus-4-8[1m]` (what `opus`/default resolves to) is not available on the
-  subagent path.
+**Orchestrator (main loop):** latest **Opus** (Opus 4.8). Set in
+`.claude/settings.json` as `"model": "opus"` (resolves to `claude-opus-4-8[1m]` via
+`ANTHROPIC_DEFAULT_OPUS_MODEL`). This runs the workflow control flow + the inline
+runner agents' *dispatch*; the main loop can reach Opus.
+
+**Subagents (the `impl-*` workers AND the workflow's inline runner agents):**
+`claude-sonnet-5[1m]`.
+
+- **impl-* agents pin `model: claude-sonnet-5[1m]`** in each
+  `.claude/agents/impl-*.md` frontmatter; the workflow's inline `agent()` runner
+  calls pin the same id. This is the reliable "sonnet 5" here.
+- **Opus is NOT available on the subagent path** — `claude-opus-4-8[1m]` fails there
+  with "not available." Never pin a subagent (impl-* or runner) to opus, even though
+  the orchestrator uses it.
+- Base `claude-sonnet-5` is flaky on this deployment — do not use it.
+- `model: sonnet` (alias) resolves to **base** `claude-sonnet-5`, NOT the env
+  default `claude-sonnet-5[1m]`. Write the exact id, not the alias.
 
 **Stale agent-definition cache (read this):** editing `.claude/agents/*.md`
 frontmatter mid-session does NOT reliably reload — some subagents keep firing the

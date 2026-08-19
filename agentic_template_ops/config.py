@@ -71,9 +71,9 @@ SERVER_CONFIGS: dict[str, ServerConfig] = {
     "detr-resnet-101": OBJECT_DETECTION_CONFIG,
 }
 
-# Server types to scan but hide from the Version Status sheet display
-# (redundant/noise on the sheet; still tracked internally).
-SHEET_HIDDEN_SERVERS: set[str] = {"llamacpp"}
+# Server types to scan but hide from the Version Status "Model Servers" display
+# section (still tracked + in the Audit Log). Empty = show every tracked server.
+SHEET_HIDDEN_SERVERS: set[str] = set()
 
 # Audit Log section markers on the "Version Status" sheet. The run history
 # lives under this section; setup/promote read the newest run's item rows as

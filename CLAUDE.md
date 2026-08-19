@@ -160,8 +160,9 @@ All four are pinned to `model: claude-sonnet-5[1m]` (see §10).
 | `CLUSTER_API` / `CLUSTER_TOKEN` | ROSA cluster access |
 
 `config.py` constants: `SERVER_CONFIGS` / `SERVER_NAME_MAP` (tracked server types),
-`SHEET_HIDDEN_SERVERS = {"llamacpp"}` (scanned but hidden from the Version Status
-display), `AUDIT_SECTION_TITLE` / `RUN_MARKER_PREFIX` (Audit Log markers).
+`SHEET_HIDDEN_SERVERS` (server types to hide from the Model Servers display —
+currently empty, so all are shown), `AUDIT_SECTION_TITLE` / `RUN_MARKER_PREFIX`
+(Audit Log markers).
 
 ---
 
@@ -174,8 +175,8 @@ Two tabs (the old separate `ai audit log` tab has been removed):
 
 **`Version Status`** (output, written by `report.py`) — three sections:
 
-1. **Model Servers** — one row per server type/version. `llamacpp` is filtered out
-   of this display (redundant; still scanned and still built).
+1. **Model Servers** — one row per server type/version (vllm, llamacpp, whispercpp,
+   object_detection). Hide any via `SHEET_HIDDEN_SERVERS` (currently none hidden).
 2. **Models (HuggingFace)** — one row per model.
 3. **Audit Log** — run history. Each run = a bold summary row
    `▶ RUN <timestamp> · N updates · M checks`, followed by one item row per update,

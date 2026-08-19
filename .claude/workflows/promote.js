@@ -90,7 +90,7 @@ const config = await agent(
    This prints a JSON array of the newest run's BUILT rows, each with an exact
    image_tag (the personal-quay image to promote). Only built images are returned.
 3. Return config values + that array as "rows" (one per built item). Do not modify image_tag.`,
-  { label: 'read-config', model: 'claude-sonnet-4-6', schema: CONFIG_SCHEMA }
+  { label: 'read-config', model: 'claude-sonnet-5[1m]', schema: CONFIG_SCHEMA }
 )
 
 if (!config || !config.rows || config.rows.length === 0) {

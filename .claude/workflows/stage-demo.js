@@ -1,12 +1,11 @@
 export const meta = {
   name: 'stage-demo',
-  description: 'Stage the built images (read from the Sheet) on the ai-lab-template fork and deploy the rolling demo (skips investigate + build)',
-  whenToUse: 'Run when images are already built + recorded to the Sheet (via /setup Build+Record) and you only need to stage templates and deploy the rolling demo. Skips the drift scan and image builds.',
+  description: 'Deploy the rolling demo against the staging branch that /setup already pushed (reuse, do not re-stage). Skips investigate + build + stage.',
+  whenToUse: 'Run after /setup has staged a branch (env files edited, regenerated, pushed to the fork) and you only need to deploy the rolling demo for testing. Reuses the most recent update-all-* branch on the fork; pass args.branch to pin a specific one.',
   phases: [
     { title: 'Pre-flight', detail: 'Read .env config' },
-    { title: 'Read', detail: 'Read built image tags from the Sheet (source of truth)' },
-    { title: 'Stage', detail: 'Update ai-lab-template env files with the exact built tags, push fork branch' },
-    { title: 'Deploy', detail: 'Deploy rolling demo to ROSA cluster' },
+    { title: 'Find branch', detail: 'Locate the most recent update-all-* staging branch on the fork' },
+    { title: 'Deploy', detail: 'Deploy rolling demo to ROSA cluster against that branch' },
   ],
 }
 
@@ -23,36 +22,14 @@ const ENV_SCHEMA = {
   required: ['ai_lab_template_path', 'quay_personal_ns', 'fork_owner'],
 }
 
-// list-built output: the newest run's built rows (source of truth for staging)
-const BUILT_LIST_SCHEMA = {
-  type: 'object',
-  properties: {
-    built: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          template: { type: 'string' },
-          component: { type: 'string' },
-          server_type: { type: 'string' },
-          current_version: { type: 'string' },
-          latest_version: { type: 'string' },
-          image_tag: { type: 'string' },
-          notes: { type: 'string' },
-        },
-        required: ['component', 'server_type', 'latest_version', 'image_tag'],
-      },
-    },
-  },
-  required: ['built'],
-}
-
-const STAGE_RESULT_SCHEMA = {
+// Result of discovering the staging branch /setup already pushed to the fork.
+const FIND_RESULT_SCHEMA = {
   type: 'object',
   properties: {
     success: { type: 'boolean' },
     branch_name: { type: 'string' },
     registration_url: { type: 'string' },
+    candidates: { type: 'array', items: { type: 'string' } },
     error: { type: 'string' },
   },
   required: ['success'],
@@ -70,12 +47,15 @@ const DEPLOY_RESULT_SCHEMA = {
 
 const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n'
 
+// Optional pin: Workflow({ name: 'stage-demo', args: { branch: 'update-all-20260819' } })
+const pinnedBranch = (args && args.branch) ? String(args.branch) : ''
+
 // ── Phase 1: Pre-flight ──────────────────────────────────────────────
 
 phase('Pre-flight')
 
 const env = await agent(
-  TERSE + `Read config for a stage+deploy run:
+  TERSE + `Read config for a deploy run:
 1. Run: agentic-template-ops configure
 2. Read the .env file in the project root (never modify it)
 3. Extract and return:
@@ -86,7 +66,7 @@ const env = await agent(
    - FORK_OWNER
    - ROLLING_DEMO_GITOPS_PATH (optional — empty string if unset)
 Return the extracted values as structured output.`,
-  { label: 'pre-flight', model: 'claude-sonnet-4-6', schema: ENV_SCHEMA }
+  { label: 'pre-flight', model: 'claude-sonnet-5[1m]', schema: ENV_SCHEMA }
 )
 
 if (!env) {
@@ -94,78 +74,45 @@ if (!env) {
   return { status: 'failed', phase: 'pre-flight' }
 }
 
-log(`Config loaded. Personal quay: ${env.quay_personal_ns}, template: ${env.ai_lab_template_path}`)
+log(`Config loaded. Fork: ${env.fork_owner}, template: ${env.ai_lab_template_path}`)
 
-// ── Phase 2: Read built rows from the Sheet ──────────────────────────
+// ── Phase 2: Find the staging branch /setup already pushed ───────────
 
-phase('Read')
+phase('Find branch')
 
-const recorded = await agent(
-  TERSE + `Read the built updates from the Google Sheet.
-Run: agentic-template-ops list-built
-Return the JSON array it prints as {"built": <that array>}. Do not modify any values.`,
-  { label: 'list-built', phase: 'Read', model: 'claude-sonnet-4-6', schema: BUILT_LIST_SCHEMA }
-)
+const pinInstruction = pinnedBranch
+  ? `A specific branch was requested: "${pinnedBranch}". Verify it exists on the fork remote (origin) and use it. If it does not exist, return success=false with an error.`
+  : `Pick the MOST RECENT branch matching update-all-* (staging branches from /setup). Sort by committer date, newest first, and take the top one. If none exist, return success=false with an error saying to run /setup first.`
 
-const builtRows = (recorded && recorded.built) || []
-if (builtRows.length === 0) {
-  log('No built images in the latest audit run. Run /setup (Build+Record) first.')
-  return { status: 'failed', phase: 'read' }
-}
-log(`${builtRows.length} built rows from the Sheet.`)
+const found = await agent(
+  TERSE + `Find the ai-lab-template staging branch that /setup already pushed to the fork. Do NOT edit any files, do NOT create or push branches — read-only discovery.
 
-// ── Phase 3: Stage templates (exact tags from the Sheet) ─────────────
-
-phase('Stage')
-
-const serverSummary = JSON.stringify(
-  builtRows.filter(b => b.component === 'server').map(b => ({
-    server_type: b.server_type,
-    version: b.latest_version,
-    image_tag: b.image_tag,
-  }))
-)
-
-const modelSummary = JSON.stringify(
-  builtRows.filter(b => b.component === 'model').map(b => ({
-    model: b.server_type,
-    version: b.latest_version,
-    image_tag: b.image_tag,
-  }))
-)
-
-const stageResult = await agent(
-  TERSE + `Stage pre-built images on the ai-lab-template fork. Read .env at .env for config.
-Pre-verification workflow:
 1. cd ${env.ai_lab_template_path}
-2. Create ONE branch from main for ALL updates (servers + models together). Never create separate branches.
-3. Update scripts/envs/* to use the EXACT image_tag from each entry below — do NOT reconstruct or reformat tags.
-4. Server updates: ${serverSummary}
-5. Model updates: ${modelSummary}
-6. Apply ALL changes to the SAME branch in a SINGLE commit.
-7. Run ./scripts/import-ai-lab-samples && ./scripts/generate-no-app-template
-8. Commit and push to fork (${env.fork_owner})
-9. Output the RHDH registration URL
+2. git fetch origin --prune   (origin is the fork, ${env.fork_owner})
+3. List remote staging branches:
+   git for-each-ref --sort=-committerdate --format='%(refname:short)' 'refs/remotes/origin/update-all-*'
+4. ${pinInstruction}
+5. Strip any leading "origin/" from the chosen branch name.
+6. Build the RHDH registration URL:
+   https://github.com/${env.fork_owner}/ai-lab-template/blob/<branch>/all.yaml
 
-IMPORTANT: Everything goes in ONE branch, ONE commit. Use image_tag verbatim.
-
-Return success, branch_name, and registration_url.`,
-  {
-    label: 'stage-templates',
-    agentType: 'impl-template',
-    schema: STAGE_RESULT_SCHEMA,
-  }
+Return success, branch_name (no origin/ prefix), registration_url, and candidates (the full sorted list you found).`,
+  { label: 'find-branch', agentType: 'impl-template', schema: FIND_RESULT_SCHEMA }
 )
 
-if (!stageResult || !stageResult.success) {
-  log('Template staging failed.')
-  return { status: 'failed', phase: 'stage' }
+if (!found || !found.success || !found.branch_name) {
+  log('No staging branch found on the fork. Run /setup first (or pass args.branch).')
+  return { status: 'failed', phase: 'find-branch', error: found && found.error }
 }
 
-log(`Templates staged on branch: ${stageResult.branch_name}`)
-log(`Registration URL: ${stageResult.registration_url}`)
+if (found.candidates && found.candidates.length > 1) {
+  log(`${found.candidates.length} update-all-* branches on the fork; using most recent: ${found.branch_name}`)
+} else {
+  log(`Reusing staging branch: ${found.branch_name}`)
+}
+log(`Registration URL: ${found.registration_url}`)
 
-// ── Phase 4: Deploy rolling demo ────────────────────────────────────
+// ── Phase 3: Deploy rolling demo ────────────────────────────────────
 
 let deployResult = null
 
@@ -178,7 +125,7 @@ if (!env.rolling_demo_gitops_path) {
     TERSE + `Deploy rolling demo to ROSA cluster. Read .env at .env for config.
 Rolling demo repo: ${env.rolling_demo_gitops_path}
 Fork owner: ${env.fork_owner}
-Template branch: ${stageResult.branch_name}
+Template branch: ${found.branch_name}
 
 1. Generate private-env from .env (overwrite always)
 2. Update values.yaml catalog location to fork branch
@@ -201,11 +148,9 @@ Return success and rhdh_base_url.`,
 }
 
 return {
-  status: 'staged',
-  servers_staged: builtRows.filter(b => b.component === 'server').length,
-  models_staged: builtRows.filter(b => b.component === 'model').length,
-  registration_url: stageResult.registration_url,
-  branch: stageResult.branch_name,
+  status: 'deployed',
+  branch: found.branch_name,
+  registration_url: found.registration_url,
   rhdh_url: env.rolling_demo_gitops_path ? deployResult?.rhdh_base_url : null,
   next_step: 'Test templates on RHDH, then run /promote',
 }

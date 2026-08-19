@@ -201,12 +201,13 @@ Runs against Google Vertex (`CLAUDE_CODE_USE_VERTEX=1`, project
 `itpc-ca-40fc187f02`, region `global`). Model availability on the **workflow
 subagent path** is narrower than the main loop:
 
-- **impl-* agents use `model: claude-sonnet-5[1m]`** (exact id in each
-  `.claude/agents/impl-*.md` frontmatter). This is the reliable "sonnet 5" here.
-- Base `claude-sonnet-5` is flaky on this deployment — do not use it.
-- `model: sonnet` (alias) resolves to **base** `claude-sonnet-5`, NOT the env
-  default `ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5[1m]`. Write the exact id,
-  not the alias.
+- **impl-* agents use `model: claude-sonnet-4-6`** (exact id in each
+  `.claude/agents/impl-*.md` frontmatter). This is the reliable subagent model here.
+- `claude-sonnet-5[1m]` was previously pinned but was dropped from this vertex
+  deployment (2026-08-19: "model claude-sonnet-5[1m] is not available on your
+  vertex deployment"). Do not use it. Base `claude-sonnet-5` is also flaky here.
+- `model: sonnet` (alias) resolves to **base** `claude-sonnet-5` — do not use the
+  alias; write the exact id.
 - `claude-opus-4-8[1m]` (what `opus`/default resolves to) is not available on the
   subagent path.
 

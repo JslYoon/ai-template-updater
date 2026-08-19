@@ -77,6 +77,7 @@ flowchart TD
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | Agent orchestration, workflow runner |
 | [podman](https://podman.io/) | `sudo dnf install podman` (Fedora) / [install guide](https://podman.io/docs/installation) | Container image builds and pushes |
 | [skopeo](https://github.com/containers/skopeo) | `sudo dnf install skopeo` (Fedora) / [install guide](https://github.com/containers/skopeo/blob/main/install.md) | Image inspection and tag listing |
+| [hf](https://huggingface.co/docs/huggingface_hub/guides/cli) | Installed with `huggingface-hub>=0.34` (a Python dep) | HuggingFace model info during `investigate` (optional — HTTP fallback) |
 | [gh](https://cli.github.com/) | `sudo dnf install gh` (Fedora) / [install guide](https://github.com/cli/cli#installation) | GitHub PR creation |
 | Python 3.11+ | `sudo dnf install python3.11` (Fedora) / [python.org](https://www.python.org/downloads/) | CLI tool runtime |
 
@@ -281,7 +282,9 @@ Each agent definition contains server-specific build patterns (e.g. how vLLM req
 
 ### Google Sheets
 
-A shared Google Sheet is the source of truth. Two tabs:
+A shared Google Sheet is the source of truth:
+**[Version drift tracker](https://docs.google.com/spreadsheets/d/11S2h__-nN4fr25DJcfDbwQWXztLG5lrywthYPoSDPyQ/edit)**
+(id `11S2h__-nN4fr25DJcfDbwQWXztLG5lrywthYPoSDPyQ`, the CLI default). Two tabs:
 - **Template List** — input: which templates to monitor
 - **Version Status** — output, written by `report.py`. Sections: **Model Servers**,
   **Models (HuggingFace)**, and **Audit Log** (run history).

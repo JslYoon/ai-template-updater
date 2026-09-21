@@ -4,19 +4,18 @@ Agentic tool that detects version drift in RHDH AI software templates, builds up
 
 ## What it does
 
-Keeps [ai-lab-template](https://github.com/redhat-ai-dev/ai-lab-template) and [developer-images](https://github.com/redhat-ai-dev/developer-images) in sync with upstream model server releases (vLLM, llama.cpp, whisper.cpp) and HuggingFace model updates (Granite, Mistral, DETR, etc).
+Keeps [rhdh-ai-template](https://github.com/redhat-developer/rhdh-ai-template) and [rhdh-ai-developer-images](https://github.com/redhat-developer/rhdh-ai-developer-images) in sync with upstream model server releases (vLLM, llama.cpp, whisper.cpp) and HuggingFace model updates (Granite, Mistral, DETR, etc).
 
 ### Pipeline
 
+Five steps (each workflow adds a pre-flight that loads `.env` and verifies quay auth):
+
 ```
-Phase 1: Pre-flight     Load .env config, verify quay auth
-Phase 2: Investigate    Check upstream for new versions, write the Audit Log to Google Sheets
-Phase 3: Build          Build container images, push to personal quay
-Phase 4: Record         Write each pushed image tag back to the Sheet (built=TRUE + image_tag)
-Phase 5: Stage          Read built rows from the Sheet, set template tags, push a fork branch
-Phase 6: Deploy         Deploy rolling demo to ROSA (optional)
-Phase 7: Verify         Human tests staged templates on ROSA cluster (human-in-the-loop)
-Phase 8: Promote        Retag images to official quay, create PRs to upstream repos
+Step 1: Investigate   Scan upstream for new versions; write the Audit Log to Google Sheets
+Step 2: Build         Build images, push to personal quay, record pushed tags back to the Sheet
+Step 3: Stage         Read built rows from the Sheet, set template tags, push a fork branch
+Step 4: Deploy        Deploy rolling demo to ROSA; human verifies templates (human-in-the-loop)
+Step 5: Promote       Retag images to official quay, open PRs to upstream repos
 ```
 
 **The Google Sheet is the source of truth after Investigate.** The build phase records
@@ -53,8 +52,8 @@ flowchart TD
         direction TB
         P1["1. Config<br/>read .env + list-built rows"]
         P2["2. Promote (parallel)<br/>retag image_tag PERSONAL → OFFICIAL"]
-        P3["3. DevImages (sequential)<br/>commit version dirs · PR developer-images"]
-        P4["4. Templates<br/>reuse setup branch · OFFICIAL tags · PR ai-lab-template"]
+        P3["3. DevImages (sequential)<br/>commit version dirs · PR rhdh-ai-developer-images"]
+        P4["4. Templates<br/>reuse setup branch · OFFICIAL tags · PR rhdh-ai-template"]
         P1 --> P2 --> P3 --> P4
         P2 -. impl-builder .-> P2
         P3 -. impl-devimages .-> P3
@@ -64,6 +63,29 @@ flowchart TD
     SETUP --> MANUAL
     MANUAL -->|verified OK| PROMOTE
 ```
+
+## Release log
+
+### 2026-09-21 (Jira [RHIDP-15860](https://issues.redhat.com/browse/RHIDP-15860))
+
+Upstream repos were retired and moved this cycle; the tool now targets them:
+- `redhat-ai-dev/ai-lab-template` → `redhat-developer/rhdh-ai-template`
+- `redhat-ai-dev/developer-images` → `redhat-developer/rhdh-ai-developer-images`
+
+Promoted to official quay (`redhat-ai-dev` namespace, unchanged):
+
+| Component | From | To | PRs |
+|-----------|------|----|-----|
+| llama-cpp-python (server) | 0.3.16 | 0.3.35 | [template#13](https://github.com/redhat-developer/rhdh-ai-template/pull/13), [devimages#31](https://github.com/redhat-developer/rhdh-ai-developer-images/pull/31) |
+| Granite (model) | 3.1 | 3.3 | same PRs |
+
+Intentionally held / not taken this cycle:
+- **vLLM** kept at `v0.11.0` / `v0.6.6` (upstream `v0.27.1` deferred).
+- **whisper.cpp** `1.8.0` → `v1.9.2` still pending (not built this cycle).
+
+> Note: the Google Sheet's **Model Servers / Models** summary sections still show
+> the pre-promote drift for these until the next `investigate` refreshes them; the
+> Audit Log reflects the built/held state correctly.
 
 ## Prerequisites
 
@@ -137,8 +159,8 @@ Fork and clone these repos locally, then set paths in `.env`:
 
 | Repo | Clone | Purpose |
 |------|-------|---------|
-| [redhat-ai-dev/developer-images](https://github.com/redhat-ai-dev/developer-images) | `gh repo fork redhat-ai-dev/developer-images --clone` | Container build sources (Containerfiles, config.env) |
-| [redhat-ai-dev/ai-lab-template](https://github.com/redhat-ai-dev/ai-lab-template) | `gh repo fork redhat-ai-dev/ai-lab-template --clone` | RHDH software templates (env files, generation scripts) |
+| [redhat-developer/rhdh-ai-developer-images](https://github.com/redhat-developer/rhdh-ai-developer-images) | `gh repo fork redhat-developer/rhdh-ai-developer-images --clone` | Container build sources (Containerfiles, config.env) |
+| [redhat-developer/rhdh-ai-template](https://github.com/redhat-developer/rhdh-ai-template) | `gh repo fork redhat-developer/rhdh-ai-template --clone` | RHDH software templates (env files, generation scripts) |
 | [redhat-ai-dev/ai-rolling-demo-gitops](https://github.com/redhat-ai-dev/ai-rolling-demo-gitops) (optional) | `gh repo fork redhat-ai-dev/ai-rolling-demo-gitops --clone` | ROSA cluster deployment for testing |
 
 Each fork needs push access under your GitHub account.
@@ -159,8 +181,8 @@ cp .env.example .env
 
 Required values:
 ```
-DEVELOPER_IMAGES_PATH=/absolute/path/to/developer-images
-AI_LAB_TEMPLATE_PATH=/absolute/path/to/ai-lab-template
+DEVELOPER_IMAGES_PATH=/absolute/path/to/rhdh-ai-developer-images
+AI_LAB_TEMPLATE_PATH=/absolute/path/to/rhdh-ai-template
 QUAY_PERSONAL_NS=your-quay-username
 QUAY_OFFICIAL_NS=redhat-ai-dev
 FORK_OWNER=your-github-username
@@ -202,7 +224,7 @@ Typical flow:
 
 1. `/setup` -- pre-flight, investigate drift, build images, push to personal quay, record tags to the Sheet, stage templates on a fork branch, deploy rolling demo
 2. **Verify** (human-in-the-loop) -- register output URL in RHDH, test staged templates on ROSA cluster
-3. `/promote` -- retag images to official quay, create PRs to developer-images and ai-lab-template
+3. `/promote` -- retag images to official quay, create PRs to rhdh-ai-developer-images and rhdh-ai-template
 
 Use `/stage-demo` to re-stage/redeploy without rebuilding (it reads the built rows the Sheet already holds).
 
@@ -273,7 +295,7 @@ Subagents use Sonnet for cost efficiency. Build/template tasks are well-defined 
   Config agent           Read .env + list-built rows (built images, with image_tag)
   [JS dedup]             Deduplicate
   Promote agents (parallel)  Retag image_tag from personal to official quay
-  DevImages agents (sequential)  One PR per server to developer-images (shared git tree)
+  DevImages agents (sequential)  One PR per server to rhdh-ai-developer-images (shared git tree)
   Template agent         Update templates to official tags, create upstream PR
 ```
 
@@ -286,8 +308,8 @@ Defined in `.claude/agents/*.md` with frontmatter (name, tools, model) and markd
 | Agent | Tools | Role | Used in |
 |-------|-------|------|---------|
 | `impl-builder` | Bash, Read, Edit, Write | Build container images (push to personal quay) / retag to official quay | setup, promote |
-| `impl-template` | Bash, Read, Edit, Write | Update ai-lab-template env files (exact `image_tag`), regenerate templates | setup, stage-demo, promote |
-| `impl-devimages` | Bash, Read, Edit, Write | Commit version dirs to developer-images, create PRs | promote |
+| `impl-template` | Bash, Read, Edit, Write | Update rhdh-ai-template env files (exact `image_tag`), regenerate templates | setup, stage-demo, promote |
+| `impl-devimages` | Bash, Read, Edit, Write | Commit version dirs to rhdh-ai-developer-images, create PRs | promote |
 | `impl-rolling-demo` | Bash, Read, Edit, Write | Deploy staged templates to ROSA cluster | setup, stage-demo |
 
 Each agent definition contains server-specific build patterns (e.g. how vLLM requirements differ from llamacpp), CI skip lists, PR formats, and env file conventions. This domain knowledge stays in the agent definition and is loaded only when that agent runs.

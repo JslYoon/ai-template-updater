@@ -210,6 +210,6 @@ class AppConfig:
     max_workers: int = 8
     dry_run: bool = False
     target_repos: list[str] = field(default_factory=lambda: [
-        "redhat-ai-dev/developer-images",
-        "redhat-ai-dev/ai-lab-template",
+        "redhat-developer/rhdh-ai-developer-images",
+        "redhat-developer/rhdh-ai-template",
     ])

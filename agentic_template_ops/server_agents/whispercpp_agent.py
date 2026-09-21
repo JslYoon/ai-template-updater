@@ -7,7 +7,7 @@ from packaging.version import InvalidVersion, Version
 from agentic_template_ops.config import WHISPERCPP_CONFIG
 from agentic_template_ops.server_agents.base_server_agent import BaseServerAgent
 
-DEVIMAGES_REPO = "redhat-ai-dev/developer-images"
+DEVIMAGES_REPO = "redhat-developer/rhdh-ai-developer-images"
 
 
 class WhispercppAgent(BaseServerAgent):

@@ -1,7 +1,7 @@
 ---
 name: impl-builder
 description: >
-  Build container images from developer-images source and push to quay.io.
+  Build container images from rhdh-ai-developer-images source and push to quay.io.
   Handles personal quay (staging) and official quay (promotion).
 tools: [Bash, Read, Edit, Write]
 model: claude-sonnet-5[1m]
@@ -14,7 +14,7 @@ Use the `i-have-adhd` skill for ADHD-friendly output.
 
 ## Job
 
-Build updated model server and model images from developer-images repository.
+Build updated model server and model images from rhdh-ai-developer-images repository.
 
 **Phase 3 (setup):** Build and push to personal quay namespace for staging/testing.
 **Phase 5 (promote):** Retag and push to official quay after human verification.
@@ -22,7 +22,7 @@ Build updated model server and model images from developer-images repository.
 ## Environment
 
 Read config from `.env` file (never modify it):
-- `DEVELOPER_IMAGES_PATH` — local path to developer-images repo
+- `DEVELOPER_IMAGES_PATH` — local path to rhdh-ai-developer-images repo
 - `QUAY_PERSONAL_NS` — personal quay.io namespace for staging
 - `QUAY_OFFICIAL_NS` — official quay.io namespace (redhat-ai-dev)
 
@@ -140,7 +140,7 @@ podman push quay.io/redhat-ai-dev/<image>:<tag>
 
 ## CI Skip List
 
-These images are skipped by developer-images CI and MUST be built manually:
+These images are skipped by rhdh-ai-developer-images CI and MUST be built manually:
 - model-servers/vllm/* (size constraints)
 - model-servers/llamacpp_python/* (size constraints)
 - models/detr-resnet-101
@@ -151,3 +151,10 @@ These auto-build via CI on push to main:
 - model-servers/whispercpp/*
 - models/whisper-small
 - models/granite-7b-lab
+
+## Log inspection
+
+Never read whole log files. `podman build` output is huge — reading it in full
+blows the context window. Inspect with `rg`/`grep`/`tail` only: e.g.
+`tail -n 100 <log>`, `grep -C 5 -iE 'error|fail' <log>`. Never `cat` or Read a
+log over ~100 lines; quote only the shortest decisive lines.

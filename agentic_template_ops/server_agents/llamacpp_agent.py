@@ -11,7 +11,7 @@ from agentic_template_ops.server_agents.base_server_agent import BaseServerAgent
 if TYPE_CHECKING:
     from agentic_template_ops.config import TemplateCandidate
 
-DEVIMAGES_REPO = "redhat-ai-dev/developer-images"
+DEVIMAGES_REPO = "redhat-developer/rhdh-ai-developer-images"
 
 
 class LlamacppAgent(BaseServerAgent):

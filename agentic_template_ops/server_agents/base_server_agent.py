@@ -180,7 +180,7 @@ class BaseServerAgent(abc.ABC):
     @staticmethod
     def _parse_version_from_url(url: str) -> str | None:
         path = urlparse(url).path
-        # developer-images pattern: /model-servers/vllm/0.6.6
+        # rhdh-ai-developer-images pattern: /model-servers/vllm/0.6.6
         match = re.search(r"/model-servers?/[^/]+/(\d+\.\d+[\d.]*)", path)
         if match:
             return match.group(1)

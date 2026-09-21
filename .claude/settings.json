@@ -11,13 +11,13 @@
       "Bash(acli jira *)",
       "Bash(gh api *)",
       "WebSearch",
-      "Read(/home/lyoon/Desktop/RHDH/developer-images/**)",
-      "Read(/home/lyoon/Desktop/RHDH/ai-lab-template/**)",
+      "Read(/home/lyoon/Desktop/RHDH/rhdh-ai-developer-images/**)",
+      "Read(/home/lyoon/Desktop/RHDH/rhdh-ai-template/**)",
       "Read(/home/lyoon/Desktop/RHDH/rolling-demo/**)"
     ],
     "additionalDirectories": [
-      "/home/lyoon/Desktop/RHDH/developer-images",
-      "/home/lyoon/Desktop/RHDH/ai-lab-template",
+      "/home/lyoon/Desktop/RHDH/rhdh-ai-developer-images",
+      "/home/lyoon/Desktop/RHDH/rhdh-ai-template",
       "/home/lyoon/Desktop/RHDH/rolling-demo"
     ]
   }

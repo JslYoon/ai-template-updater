@@ -1,12 +1,12 @@
 export const meta = {
   name: 'promote',
-  description: 'Phase 5: retag images to official quay, create PRs for developer-images and ai-lab-template',
+  description: 'Phase 5: retag images to official quay, create PRs for rhdh-ai-developer-images and rhdh-ai-template',
   whenToUse: 'Run this AFTER verifying staged templates on ROSA cluster (after /setup). Promotes staging images to production.',
   phases: [
     { title: 'Config', detail: 'Read .env and the latest audit run from Version Status' },
     { title: 'Promote', detail: 'Retag images from personal to official quay in parallel' },
-    { title: 'DevImages', detail: 'Commit version dirs to developer-images, create PRs (sequential)' },
-    { title: 'Templates', detail: 'Update ai-lab-template to official tags, create upstream PR' },
+    { title: 'DevImages', detail: 'Commit version dirs to rhdh-ai-developer-images, create PRs (sequential)' },
+    { title: 'Templates', detail: 'Update rhdh-ai-template to official tags, create upstream PR' },
   ],
 }
 
@@ -18,6 +18,7 @@ const CONFIG_SCHEMA = {
     quay_personal_ns: { type: 'string' },
     quay_official_ns: { type: 'string' },
     fork_owner: { type: 'string' },
+    jira_ticket: { type: 'string' },
     rows: {
       type: 'array',
       items: {
@@ -74,7 +75,9 @@ const TEMPLATE_RESULT_SCHEMA = {
   required: ['success'],
 }
 
-const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n'
+const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n' +
+  'Never read whole log files (podman build, make install-no-rhoai, generation/run scripts). ' +
+  'Inspect with tail -n 100 <log> or grep -C 5 -iE "error|fail" <log>; never cat or Read a log over ~100 lines. Quote only the shortest decisive lines.\n'
 
 // ── Phase 1: Read Config ─────────────────────────────────────────────
 
@@ -85,6 +88,7 @@ const config = await agent(
 1. Read .env file in project root (never modify it). Extract:
    - DEVELOPER_IMAGES_PATH, AI_LAB_TEMPLATE_PATH
    - QUAY_PERSONAL_NS, QUAY_OFFICIAL_NS, FORK_OWNER
+   - JIRA_TICKET (return as jira_ticket; empty string if the line is absent)
 2. Read the built updates (source of truth) from the Sheet:
    Run: agentic-template-ops list-built
    This prints a JSON array of the newest run's BUILT rows, each with an exact
@@ -99,6 +103,14 @@ if (!config || !config.rows || config.rows.length === 0) {
 }
 
 log(`${config.rows.length} updates to promote. Deduplicating...`)
+
+// Every promote PR body MUST end with this footer: tool provenance + Jira.
+const TOOL_URL = 'https://github.com/JslYoon/ai-template-updater'
+const jiraLine = config.jira_ticket
+  ? `Jira: [${config.jira_ticket}](https://issues.redhat.com/browse/${config.jira_ticket})`
+  : 'Jira: (none set — add JIRA_TICKET to .env)'
+const PR_FOOTER = `\n\n---\nTooling: [agentic-template-ops](${TOOL_URL}) (Phase 5)\n${jiraLine}`
+if (!config.jira_ticket) log('WARNING: JIRA_TICKET not set in .env — PRs will omit the Jira link.')
 
 // ── JS dedup ─────────────────────────────────────────────────────────
 
@@ -185,10 +197,11 @@ for (let i = 0; i < serverList.length; i++) {
 
   const result = await agent(
     TERSE + `Phase 5 promote. Read .env file at .env for config.
-Commit version directory for ONE server in ${config.developer_images_path} and create PR to upstream redhat-ai-dev/developer-images.
+Commit version directory for ONE server in ${config.developer_images_path} and create PR to upstream redhat-developer/rhdh-ai-developer-images.
 Fork owner: ${config.fork_owner}
   server_type: ${server.server_type}
   version: ${server.latest_version}
+The PR body MUST end with this exact footer (verbatim, including the links):${PR_FOOTER}
 Return success, server_type, version, and pr_url.`,
     {
       label: `devimages:${server.server_type}`,
@@ -239,10 +252,12 @@ Post-verification workflow:
 3. Server updates: ${serverSummary}
 4. Model updates: ${modelSummary}
 5. Re-run generation scripts
-6. Commit, push, create PR to upstream redhat-ai-dev/ai-lab-template
+6. Commit, push, create PR to upstream redhat-developer/rhdh-ai-template
 Fork owner: ${config.fork_owner}
 
 IMPORTANT: Everything in ONE branch, ONE commit. Use image_tag verbatim. Never split servers and models into separate branches.
+
+The PR body MUST end with this exact footer (verbatim, including the links):${PR_FOOTER}
 
 Return success and pr_url.`,
   {
@@ -259,8 +274,8 @@ if (!templateResult || !templateResult.success) {
 // ── Summary ──────────────────────────────────────────────────────────
 
 const prs = [
-  ...(devimagesSuccess.map(d => ({ repo: 'developer-images', type: d.server_type, url: d.pr_url }))),
-  ...(templateResult && templateResult.success ? [{ repo: 'ai-lab-template', type: 'templates', url: templateResult.pr_url }] : []),
+  ...(devimagesSuccess.map(d => ({ repo: 'rhdh-ai-developer-images', type: d.server_type, url: d.pr_url }))),
+  ...(templateResult && templateResult.success ? [{ repo: 'rhdh-ai-template', type: 'templates', url: templateResult.pr_url }] : []),
 ]
 
 return {

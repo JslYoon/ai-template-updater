@@ -7,7 +7,7 @@ export const meta = {
     { title: 'Investigate', detail: 'Check all servers/models for version drift' },
     { title: 'Build', detail: 'Build container images in parallel, push to personal quay' },
     { title: 'Record', detail: 'Record built image tags to the Sheet (source of truth)' },
-    { title: 'Stage', detail: 'Update ai-lab-template env files with staging tags from the Sheet' },
+    { title: 'Stage', detail: 'Update rhdh-ai-template env files with staging tags from the Sheet' },
     { title: 'Deploy', detail: 'Deploy rolling demo to ROSA cluster for testing' },
   ],
 }
@@ -108,7 +108,9 @@ const BUILT_LIST_SCHEMA = {
   required: ['built'],
 }
 
-const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n'
+const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n' +
+  'Never read whole log files (podman build, make install-no-rhoai, generation/run scripts). ' +
+  'Inspect with tail -n 100 <log> or grep -C 5 -iE "error|fail" <log>; never cat or Read a log over ~100 lines. Quote only the shortest decisive lines.\n'
 
 // ── Phase 1: Pre-flight ──────────────────────────────────────────────
 
@@ -129,7 +131,7 @@ const env = await agent(
 4. Verify agentic-template-ops is installed: agentic-template-ops --help
 
 Return the extracted values as structured output.`,
-  { label: 'pre-flight', model: 'claude-sonnet-5[1m]', schema: ENV_SCHEMA }
+  { label: 'pre-flight', model: 'claude-sonnet-4.6', schema: ENV_SCHEMA }
 )
 
 if (!env) {
@@ -146,7 +148,7 @@ If it returns a username, auth is good — return authenticated: true.
 If it fails or says "not logged in", return authenticated: false.`,
   {
     label: 'check-quay-auth',
-    model: 'claude-sonnet-5[1m]',
+    model: 'claude-sonnet-4.6',
     schema: {
       type: 'object',
       properties: { authenticated: { type: 'boolean' } },
@@ -180,7 +182,7 @@ const audit = await agent(
 4. Return updates_found count (number of item rows) and the item rows.
 
 If no updates found, return updates_found: 0 and empty rows array.`,
-  { label: 'investigate', model: 'claude-sonnet-5[1m]', schema: AUDIT_SCHEMA }
+  { label: 'investigate', model: 'claude-sonnet-4.6', schema: AUDIT_SCHEMA }
 )
 
 if (!audit || audit.updates_found === 0) {
@@ -316,14 +318,14 @@ const RECORD_SCHEMA = {
 }
 
 let recorded = await agent(recordPrompt, {
-  label: 'record-builds', phase: 'Record', model: 'claude-sonnet-5[1m]', schema: RECORD_SCHEMA,
+  label: 'record-builds', phase: 'Record', model: 'claude-sonnet-4.6', schema: RECORD_SCHEMA,
 })
 
 // One workflow-level retry on top of the agent's own internal retries.
 if (!recorded || !recorded.built || recorded.built.length === 0) {
   log('Record came back empty — retrying the Sheet round-trip once...')
   recorded = await agent(recordPrompt, {
-    label: 'record-builds-retry', phase: 'Record', model: 'claude-sonnet-5[1m]', schema: RECORD_SCHEMA,
+    label: 'record-builds-retry', phase: 'Record', model: 'claude-sonnet-4.6', schema: RECORD_SCHEMA,
   })
 }
 
@@ -412,10 +414,19 @@ Rolling demo repo: ${env.rolling_demo_gitops_path}
 Fork owner: ${env.fork_owner}
 Template branch: ${stageResult.branch_name}
 
-1. Generate private-env from .env (overwrite always)
+1. Do NOT overwrite scripts/private-env. It already exists and holds required
+   secrets not present in .env. Edit it IN PLACE: update ONLY CLUSTER_API and
+   CLUSTER_TOKEN to match .env, and sync RHDH_CLUSTER_ROUTER_BASE to the cluster
+   (derive: oc login with CLUSTER_API/CLUSTER_TOKEN, then
+   oc get ingresses.config/cluster -o jsonpath='{.spec.domain}'). Do NOT copy the
+   "# Synced from template updater .env" path block (DEVELOPER_IMAGES_PATH,
+   AI_LAB_TEMPLATE_PATH, QUAY_*, FORK_OWNER, ROLLING_DEMO_GITOPS_PATH). Leave
+   every other line untouched. If private-env does not exist, generate it fresh
+   from .env. If RHDH_CLUSTER_ROUTER_BASE changed, delete any stale
+   rolling-demo-backstage route so it regenerates on the new domain.
 2. Update values.yaml catalog location to fork branch
 3. Commit to development branch, push
-4. Run make install
+4. Run make install-no-rhoai
 
 Return success and rhdh_base_url.`,
     {

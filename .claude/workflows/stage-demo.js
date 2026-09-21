@@ -40,12 +40,16 @@ const DEPLOY_RESULT_SCHEMA = {
   properties: {
     success: { type: 'boolean' },
     rhdh_base_url: { type: 'string' },
+    github_webhook_url: { type: 'string' },
+    rhdh_callback_url: { type: 'string' },
     error: { type: 'string' },
   },
   required: ['success'],
 }
 
-const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n'
+const TERSE = 'Be terse. No filler, no narration, no preamble. Action and result only.\n' +
+  'Never read whole log files (podman build, make install-no-rhoai, generation/run scripts). ' +
+  'Inspect with tail -n 100 <log> or grep -C 5 -iE "error|fail" <log>; never cat or Read a log over ~100 lines. Quote only the shortest decisive lines.\n'
 
 // Optional pin: Workflow({ name: 'stage-demo', args: { branch: 'update-all-20260819' } })
 const pinnedBranch = (args && args.branch) ? String(args.branch) : ''
@@ -66,7 +70,7 @@ const env = await agent(
    - FORK_OWNER
    - ROLLING_DEMO_GITOPS_PATH (optional — empty string if unset)
 Return the extracted values as structured output.`,
-  { label: 'pre-flight', model: 'claude-sonnet-5[1m]', schema: ENV_SCHEMA }
+  { label: 'pre-flight', model: 'claude-sonnet-5', schema: ENV_SCHEMA }
 )
 
 if (!env) {
@@ -85,7 +89,7 @@ const pinInstruction = pinnedBranch
   : `Pick the MOST RECENT branch matching update-all-* (staging branches from /setup). Sort by committer date, newest first, and take the top one. If none exist, return success=false with an error saying to run /setup first.`
 
 const found = await agent(
-  TERSE + `Find the ai-lab-template staging branch that /setup already pushed to the fork. Do NOT edit any files, do NOT create or push branches — read-only discovery.
+  TERSE + `Find the rhdh-ai-template staging branch that /setup already pushed to the fork. Do NOT edit any files, do NOT create or push branches — read-only discovery.
 
 1. cd ${env.ai_lab_template_path}
 2. git fetch origin --prune   (origin is the fork, ${env.fork_owner})
@@ -94,7 +98,7 @@ const found = await agent(
 4. ${pinInstruction}
 5. Strip any leading "origin/" from the chosen branch name.
 6. Build the RHDH registration URL:
-   https://github.com/${env.fork_owner}/ai-lab-template/blob/<branch>/all.yaml
+   https://github.com/${env.fork_owner}/rhdh-ai-template/blob/<branch>/all.yaml
 
 Return success, branch_name (no origin/ prefix), registration_url, and candidates (the full sorted list you found).`,
   { label: 'find-branch', agentType: 'impl-template', schema: FIND_RESULT_SCHEMA }
@@ -127,12 +131,27 @@ Rolling demo repo: ${env.rolling_demo_gitops_path}
 Fork owner: ${env.fork_owner}
 Template branch: ${found.branch_name}
 
-1. Generate private-env from .env (overwrite always)
+1. Do NOT overwrite scripts/private-env. It already exists and holds required
+   secrets not present in .env. Edit it IN PLACE: update ONLY CLUSTER_API and
+   CLUSTER_TOKEN to match .env, sync RHDH_CLUSTER_ROUTER_BASE to the cluster
+   (derive: oc login with CLUSTER_API/CLUSTER_TOKEN, then
+   oc get ingresses.config/cluster -o jsonpath='{.spec.domain}'), and sync
+   GITHUB_APP_WEBHOOK_URL to the live PAC controller route
+   (oc get route pipelines-as-code-controller -n openshift-pipelines
+   -o jsonpath='{.spec.host}'; fall back to
+   pipelines-as-code-controller-openshift-pipelines.<domain>) — it moves with the
+   cluster too. Leave all other GITHUB_APP_* secrets untouched. Do NOT copy the
+   "# Synced from template updater .env" path block (DEVELOPER_IMAGES_PATH,
+   AI_LAB_TEMPLATE_PATH, QUAY_*, FORK_OWNER, ROLLING_DEMO_GITOPS_PATH). Leave
+   every other line untouched. If private-env does not exist, generate it fresh
+   from .env. If RHDH_CLUSTER_ROUTER_BASE changed, delete any stale
+   rolling-demo-backstage route so it regenerates on the new domain.
 2. Update values.yaml catalog location to fork branch
 3. Commit to development branch, push
-4. Run make install
+4. Run make install-no-rhoai
 
-Return success and rhdh_base_url.`,
+Return success, rhdh_base_url, github_webhook_url (the synced PAC route), and
+rhdh_callback_url (<rhdh_base_url>/api/auth/oidc/handler/frame).`,
     {
       label: 'deploy-rolling-demo',
       agentType: 'impl-rolling-demo',
@@ -144,6 +163,9 @@ Return success and rhdh_base_url.`,
     log('Rolling demo deploy failed. Check agent output for details.')
   } else {
     log(`Rolling demo deployed: ${deployResult.rhdh_base_url}`)
+    log('Apply these on your GitHub App:')
+    log(`  Webhook URL:  ${deployResult.github_webhook_url}`)
+    log(`  Callback URL: ${deployResult.rhdh_callback_url}`)
   }
 }
 
@@ -152,5 +174,7 @@ return {
   branch: found.branch_name,
   registration_url: found.registration_url,
   rhdh_url: env.rolling_demo_gitops_path ? deployResult?.rhdh_base_url : null,
-  next_step: 'Test templates on RHDH, then run /promote',
+  github_webhook_url: env.rolling_demo_gitops_path ? deployResult?.github_webhook_url : null,
+  rhdh_callback_url: env.rolling_demo_gitops_path ? deployResult?.rhdh_callback_url : null,
+  next_step: 'Apply the webhook + callback URLs on your GitHub App, test templates on RHDH, then run /promote',
 }

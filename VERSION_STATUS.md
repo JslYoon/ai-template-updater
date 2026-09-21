@@ -2,7 +2,7 @@
 
 > Current deployed versions across RHDH AI templates.
 > Updated after each successful apply-updates cycle.
-> Last checked: 2026-08-18 11:14 UTC
+> Last checked: 2026-08-19 09:43 UTC
 
 ## Model Servers
 
@@ -23,4 +23,3 @@
 | `ggerganov/whisper.cpp` | audio-to-text | automatic-speech-recognition | 5359861c739e | 5359861c739e | current | 2024-10-29 | — |
 | `granite-20b` | openshift-generic |  | N/A | N/A | current | — | — |
 | `ibm-granite/granite-3.3-8b-instruct` | chatbot, model-server, rag | text-generation | 3.1 | 3.3 | YES | 2025-04-16 | 2025-05-12 |
-| `instructlab/granite-7b-lab` | chatbot-quarkus | text-generation | 4fb6a018d68a | 4fb6a018d68a | current | 2024-06-05 | — |

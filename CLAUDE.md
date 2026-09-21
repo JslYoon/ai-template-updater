@@ -16,10 +16,10 @@ Guidance for agents working in this repo.
 2. Scans each for version drift (server images on quay, models on HuggingFace,
    upstream releases on GitHub/PyPI).
 3. Builds updated container images and pushes them to a personal quay namespace
-   (staging), stages them on an `ai-lab-template` fork branch, and deploys a
+   (staging), stages them on an `rhdh-ai-template` fork branch, and deploys a
    rolling demo to a ROSA cluster for verification.
 4. After human verification, promotes images to the official quay namespace and
-   opens PRs against `developer-images` and `ai-lab-template`.
+   opens PRs against `rhdh-ai-developer-images` and `rhdh-ai-template`.
 
 The Python package does the drift scan + Sheet I/O. The `.claude/` workflows and
 subagents do the build/stage/promote/deploy work (they shell out to `podman`,
@@ -58,8 +58,8 @@ pyproject.toml                 Package; CLI entry point `agentic-template-ops`
 | 2. (review) | — | **No approval gate** — every detected update flows through automatically |
 | 3. Build | setup.js `impl-builder` | Build each updated image, push to personal quay (`quay.io/<QUAY_PERSONAL_NS>`) |
 | 4. Record | setup.js → `record-builds` | Write each pushed `image_tag` + `built=TRUE` back to the Sheet's newest run |
-| 5. Stage | setup.js `impl-template` | Read **built rows** from the Sheet, set `ai-lab-template` env files to the exact `image_tag`, regenerate, push a fork branch |
-| 6. Deploy | setup.js `impl-rolling-demo` | Deploy rolling demo to ROSA (`make install`) for verification |
+| 5. Stage | setup.js `impl-template` | Read **built rows** from the Sheet, set `rhdh-ai-template` env files to the exact `image_tag`, regenerate, push a fork branch |
+| 6. Deploy | setup.js `impl-rolling-demo` | Deploy rolling demo to ROSA (`make install-no-rhoai`) for verification |
 | 7. Verify | human | Test the staged templates on the cluster |
 | 8. Promote | promote.js `impl-builder` / `impl-devimages` / `impl-template` | Read built rows, retag `image_tag` → official quay, commit version dirs, open PRs |
 
@@ -115,17 +115,24 @@ rows; stage/promote read only `built==TRUE` rows with their exact `image_tag`.
 
 ## 6. Subagents (`.claude/agents/impl-*.md`)
 
-- **impl-builder** — Build container images from `developer-images` source and push
+- **impl-builder** — Build container images from `rhdh-ai-developer-images` source and push
   to quay (personal for staging, official for promotion).
-- **impl-template** — Update `ai-lab-template` env files with new quay tags,
+- **impl-template** — Update `rhdh-ai-template` env files with new quay tags,
   regenerate templates, manage the branch/PR lifecycle on a fork.
 - **impl-devimages** — Post-verification: commit new version directories to the
-  `developer-images` fork and open a PR.
+  `rhdh-ai-developer-images` fork and open a PR.
 - **impl-rolling-demo** — Deploy rolling demo to ROSA: generate `private-env` from
   `.env`, point `values.yaml` catalog at the staged branch, commit to the
-  development branch, run `make install`.
+  development branch, run `make install-no-rhoai`.
 
 All four are pinned to `model: claude-sonnet-5[1m]` (see §10).
+
+**PR footer (mandatory):** every PR opened by `impl-template` / `impl-devimages`
+must end its body with a two-line footer — the `agentic-template-ops` tool link
+(`https://github.com/JslYoon/ai-template-updater`) and the Jira ticket link
+(`https://issues.redhat.com/browse/<JIRA_TICKET>`). `promote.js` reads
+`JIRA_TICKET` from `.env` and passes it into both PR prompts (`PR_FOOTER`); it
+warns if the var is unset. Keep the tool link even when no ticket is set.
 
 ---
 
@@ -151,13 +158,14 @@ All four are pinned to `model: claude-sonnet-5[1m]` (see §10).
 
 | Var | Purpose |
 |-----|---------|
-| `DEVELOPER_IMAGES_PATH` | Local `developer-images` fork (absolute) |
-| `AI_LAB_TEMPLATE_PATH` | Local `ai-lab-template` fork (absolute) |
+| `DEVELOPER_IMAGES_PATH` | Local `rhdh-ai-developer-images` fork (absolute) |
+| `AI_LAB_TEMPLATE_PATH` | Local `rhdh-ai-template` fork (absolute) |
 | `QUAY_PERSONAL_NS` | Personal quay namespace (staging pushes) |
 | `QUAY_OFFICIAL_NS` | Official quay namespace (default `redhat-ai-dev`) |
 | `FORK_OWNER` | GitHub fork owner (for PRs) |
 | `ROLLING_DEMO_GITOPS_PATH` | Rolling-demo gitops repo (ROSA deploy) |
 | `CLUSTER_API` / `CLUSTER_TOKEN` | ROSA cluster access |
+| `JIRA_TICKET` | Jira key for the current cycle, stamped into every promote PR body (§6) |
 
 `config.py` constants: `SERVER_CONFIGS` / `SERVER_NAME_MAP` (tracked server types),
 `SHEET_HIDDEN_SERVERS` (server types to hide from the Model Servers display —
@@ -237,3 +245,23 @@ run still uses stale defs, so don't trust one green probe — restart.
 - **No approval gate:** every detected update auto-flows into build/stage/promote.
   Acceptable because staging pushes go to a personal quay namespace.
 - **`.env` is read-only** to agents. Never modify it during a run.
+- **Rolling-demo `private-env` is merge-in-place, never overwritten.** It holds
+  secrets not in `.env` (GITHUB_APP_*, QUAY_DOCKERCONFIGJSON, KEYCLOAK_*, DB
+  passwords, …). The deploy syncs ONLY `CLUSTER_API`/`CLUSTER_TOKEN` from `.env`
+  plus `RHDH_CLUSTER_ROUTER_BASE` **derived from the live cluster**
+  (`oc get ingresses.config/cluster -o jsonpath='{.spec.domain}'`) and
+  `GITHUB_APP_WEBHOOK_URL` **derived from the live PAC controller route**
+  (`oc get route pipelines-as-code-controller -n openshift-pipelines
+  -o jsonpath='{.spec.host}'`). Both move with the cluster or the RHDH route /
+  GitHub webhook land on a dead domain (DNS fails); delete the stale
+  `rolling-demo-backstage` route so it regenerates. `GITHUB_APP_WEBHOOK_URL` is
+  the ONLY `GITHUB_APP_*` line the deploy may touch — every other secret stays
+  untouched. Never copy the `.env` path/quay block into `private-env`. After the
+  deploy, `/stage-demo` returns the **webhook URL** and **callback URL**
+  (`<rhdh_base>/api/auth/oidc/handler/frame`) to apply on the GitHub App.
+- **Never read whole log files.** Container builds, `make install-no-rhoai`, and the
+  generation/run scripts emit huge logs — reading them in full blows the context
+  window. Always inspect with `rg`/`grep`/`tail`: filter to the signal (e.g.
+  `tail -n 100 <log>`, `grep -C 5 -iE 'error|fail' <log>`). Never `cat`/`Read` a
+  log over ~100 lines; quote only the shortest decisive lines. Applies to every
+  subagent (impl-* and workflow runners).

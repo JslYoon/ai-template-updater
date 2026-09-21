@@ -309,7 +309,7 @@ def _promote_impl(
             "impl-devimages",
             f"Phase 5 promote. Read .env file at {env_file} for config.\n"
             f"Commit version directory for ONE server in {env.developer_images_path} "
-            f"and create PR to upstream redhat-ai-dev/developer-images.\n"
+            f"and create PR to upstream redhat-developer/rhdh-ai-developer-images.\n"
             f"Fork owner: {env.fork_owner}\n"
             f"  server_type: {task['server_type']}\n"
             f"  version: {task['latest_version']}",
@@ -335,7 +335,7 @@ def _promote_impl(
         f"2. Server updates: {build_summary}\n"
         f"3. Model updates: {model_summary}\n"
         f"4. Re-run generation scripts\n"
-        f"5. Commit, push, create PR to upstream redhat-ai-dev/ai-lab-template\n"
+        f"5. Commit, push, create PR to upstream redhat-developer/rhdh-ai-template\n"
         f"Fork owner: {env.fork_owner}",
         extra_dirs=repo_dirs,
         dry_run=dry_run,
